@@ -42,8 +42,56 @@ class DnDCTk(ctk.CTk, TkinterDnD.DnDWrapper):
         TkinterDnD.DnDWrapper.__init__(self)
 
 class TextboxRedirector:
-    def __init__(self, textbox: ctk.CTkTextbox): self.textbox = textbox
-    def write(self, text): self.textbox.after(0, self.textbox.insert, "end", text); self.textbox.after(0, self.textbox.see, "end")
+    MOVED_PATH_RE = re.compile(r"MOVED: '.*' -> '([^']+)'")
+
+    def __init__(self, textbox: ctk.CTkTextbox):
+        self.textbox = textbox
+        self.link_count = 0
+        self.textbox.tag_config("log_link", foreground="#4da3ff", underline=True)
+        self.textbox.tag_bind("log_link", "<Enter>", lambda _event: self.textbox.configure(cursor="hand2"))
+        self.textbox.tag_bind("log_link", "<Leave>", lambda _event: self.textbox.configure(cursor=""))
+
+    def write(self, text):
+        self.textbox.after(0, self._write_on_main_thread, text)
+
+    def _write_on_main_thread(self, text):
+        for line in text.splitlines(keepends=True):
+            has_newline = line.endswith(("\n", "\r"))
+            line_text = line.rstrip("\r\n")
+            self.textbox.insert("end", line_text)
+            self._append_move_links(line_text)
+            if has_newline:
+                self.textbox.insert("end", "\n")
+        self.textbox.see("end")
+
+    def _append_move_links(self, line_text: str):
+        match = self.MOVED_PATH_RE.search(line_text)
+        if not match:
+            return
+        paper_path = Path(match.group(1))
+        self.textbox.insert("end", "  ")
+        self._append_link("View Location", lambda path=paper_path: self._open_location(path))
+        self.textbox.insert("end", "  ")
+        self._append_link("View Paper", lambda path=paper_path: self._open_paper(path))
+
+    def _append_link(self, label: str, callback):
+        self.link_count += 1
+        tag = f"log_link_{self.link_count}"
+        self.textbox.insert("end", label, ("log_link", tag))
+        self.textbox.tag_bind(tag, "<Button-1>", lambda _event: callback())
+
+    def _open_location(self, paper_path: Path):
+        try:
+            os.startfile(str(paper_path.parent))
+        except Exception as e:
+            logging.error(f"Failed to open location for '{paper_path}': {e}")
+
+    def _open_paper(self, paper_path: Path):
+        try:
+            os.startfile(str(paper_path))
+        except Exception as e:
+            logging.error(f"Failed to open paper '{paper_path}': {e}")
+
     def flush(self): pass
 
 class FolderPicker(ctk.CTkToplevel):
@@ -375,11 +423,7 @@ class App:
             if final_destination_path.exists():
                 final_destination_path = unique_path(final_destination_path)
             shutil.move(str(pdf_path), str(final_destination_path))
-            try:
-                rel_path = final_destination_path.relative_to(self.SCRIPT_DIRECTORY)
-                logging.info(f"MOVED: '{pdf_path.name}' -> '{rel_path}'")
-            except ValueError:
-                logging.info(f"MOVED: '{pdf_path.name}' -> '{final_destination_path}'")
+            logging.info(f"MOVED: '{pdf_path.name}' -> '{final_destination_path}'")
         except Exception as e:
             logging.error(f"Failed to move file: {e}")
         finally:
