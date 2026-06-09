@@ -88,6 +88,57 @@ class TextboxRedirector:
 
     def flush(self): pass
 
+class ToolTip:
+    def __init__(self, widget, text: str, delay_ms=450):
+        self.widget = widget
+        self.text = text
+        self.delay_ms = delay_ms
+        self._after_id = None
+        self._window = None
+        self.widget.bind("<Enter>", self._schedule, add="+")
+        self.widget.bind("<Leave>", self._hide, add="+")
+        self.widget.bind("<ButtonPress>", self._hide, add="+")
+
+    def _schedule(self, _event=None):
+        self._cancel()
+        self._after_id = self.widget.after(self.delay_ms, self._show)
+
+    def _show(self):
+        if self._window or not self.text:
+            return
+        x = self.widget.winfo_rootx() + 18
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 8
+        self._window = ctk.CTkToplevel(self.widget)
+        self._window.wm_overrideredirect(True)
+        self._window.wm_geometry(f"+{x}+{y}")
+        label = ctk.CTkLabel(
+            self._window,
+            text=self.text,
+            justify="left",
+            wraplength=320,
+            fg_color="#242526",
+            text_color="#f2f2f2",
+            corner_radius=6,
+            padx=10,
+            pady=6,
+        )
+        label.pack()
+
+    def _hide(self, _event=None):
+        self._cancel()
+        if self._window:
+            self._window.destroy()
+            self._window = None
+
+    def _cancel(self):
+        if self._after_id:
+            self.widget.after_cancel(self._after_id)
+            self._after_id = None
+
+def add_tooltip(widget, text: str):
+    ToolTip(widget, text)
+    return widget
+
 # --- NEW: Custom Dialog for Editing Filenames ---
 class FilenameEditorDialog(ctk.CTkToplevel):
     def __init__(self, master, original_name: str, ai_title: str, proposed_name: str):
@@ -131,8 +182,10 @@ class FilenameEditorDialog(ctk.CTkToplevel):
 
         self.skip_button = ctk.CTkButton(button_frame, text="Skip File", command=self._on_skip)
         self.skip_button.grid(row=0, column=0, padx=5, pady=5, sticky="ew")
+        add_tooltip(self.skip_button, "Leave this PDF where it is and move on without sorting it.")
         self.continue_button = ctk.CTkButton(button_frame, text="Continue", command=self._on_continue)
         self.continue_button.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
+        add_tooltip(self.continue_button, "Accept the filename shown here and continue to folder selection.")
 
     def _on_continue(self):
         try:
@@ -167,17 +220,25 @@ class SettingsDialog(ctk.CTkToplevel):
 
         ctk.CTkLabel(frame, text="To Sort folder").grid(row=0, column=0, padx=10, pady=(14, 6), sticky="w")
         ctk.CTkEntry(frame, textvariable=self.watch_var).grid(row=0, column=1, padx=10, pady=(14, 6), sticky="ew")
-        ctk.CTkButton(frame, text="Browse", width=90, command=self._browse_watch).grid(row=0, column=2, padx=10, pady=(14, 6))
+        self.watch_browse_button = ctk.CTkButton(frame, text="Browse", width=90, command=self._browse_watch)
+        self.watch_browse_button.grid(row=0, column=2, padx=10, pady=(14, 6))
+        add_tooltip(self.watch_browse_button, "Choose the folder the app watches and copies new PDFs into.")
 
         ctk.CTkLabel(frame, text="Sorted papers root").grid(row=1, column=0, padx=10, pady=6, sticky="w")
         ctk.CTkEntry(frame, textvariable=self.sorted_var).grid(row=1, column=1, padx=10, pady=6, sticky="ew")
-        ctk.CTkButton(frame, text="Browse", width=90, command=self._browse_sorted).grid(row=1, column=2, padx=10, pady=6)
+        self.sorted_browse_button = ctk.CTkButton(frame, text="Browse", width=90, command=self._browse_sorted)
+        self.sorted_browse_button.grid(row=1, column=2, padx=10, pady=6)
+        add_tooltip(self.sorted_browse_button, "Choose the root folder where sorted and renamed papers are stored.")
 
         button_frame = ctk.CTkFrame(self, fg_color="transparent")
         button_frame.grid(row=1, column=0, padx=16, pady=(0, 16), sticky="ew")
         button_frame.grid_columnconfigure((0, 1), weight=1)
-        ctk.CTkButton(button_frame, text="Cancel", command=self._cancel).grid(row=0, column=0, padx=6, sticky="ew")
-        ctk.CTkButton(button_frame, text="Save", command=self._save).grid(row=0, column=1, padx=6, sticky="ew")
+        self.cancel_button = ctk.CTkButton(button_frame, text="Cancel", command=self._cancel)
+        self.cancel_button.grid(row=0, column=0, padx=6, sticky="ew")
+        add_tooltip(self.cancel_button, "Close Settings without saving folder changes.")
+        self.save_button = ctk.CTkButton(button_frame, text="Save", command=self._save)
+        self.save_button.grid(row=0, column=1, padx=6, sticky="ew")
+        add_tooltip(self.save_button, "Save these folder choices for this PC and restart folder watching.")
 
     def _browse_watch(self):
         initial = self.watch_var.get() or str(Path.home())
@@ -238,10 +299,12 @@ class App:
         self.plus_label = ctk.CTkLabel(self.top_frame, text="+", font=ctk.CTkFont(size=50)); self.plus_label.grid(row=0, column=0, pady=(20, 0))
         self.settings_button = ctk.CTkButton(self.top_frame, text="Settings", width=96, command=self.open_settings)
         self.settings_button.grid(row=0, column=0, padx=14, pady=14, sticky="ne")
+        add_tooltip(self.settings_button, "Set the To Sort folder and sorted-paper library root for this PC.")
         self.browse_text_frame = ctk.CTkFrame(self.top_frame, fg_color="transparent"); self.browse_text_frame.grid(row=1, column=0, pady=(10, 20))
         self.drag_label = ctk.CTkLabel(self.browse_text_frame, text="To sort papers, drag them here, or ", font=ctk.CTkFont(size=14)); self.drag_label.pack(side="left")
         self.browse_label = ctk.CTkLabel(self.browse_text_frame, text="browse", font=ctk.CTkFont(size=14, underline=True), text_color=("blue", "cyan"), cursor="hand2")
         self.browse_label.pack(side="left"); self.browse_label.bind("<Button-1>", lambda e: self.select_and_add_papers())
+        add_tooltip(self.browse_label, "Select one or more PDF files to copy into the To Sort folder.")
         self.after_browse_label = ctk.CTkLabel(self.browse_text_frame, text=" your computer...", font=ctk.CTkFont(size=14)); self.after_browse_label.pack(side="left")
         
         self.bottom_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
@@ -252,8 +315,11 @@ class App:
         self.functions_label = ctk.CTkLabel(self.button_frame, text="Additional functions:")
         self.functions_label.pack(side="left", padx=(10, 15), pady=5)
         self.btn_name_papers = ctk.CTkButton(self.button_frame, text="Name Paper(s)", command=self.rename_papers_flow); self.btn_name_papers.pack(side="left", padx=5, pady=5)
+        add_tooltip(self.btn_name_papers, "Use Gemini to rename PDFs in place without moving them into a sorted folder.")
         self.btn_view_sorted = ctk.CTkButton(self.button_frame, text="View Sorted", command=self.open_sorted_folder); self.btn_view_sorted.pack(side="left", padx=5, pady=5)
+        add_tooltip(self.btn_view_sorted, "Open the configured sorted-paper root folder in Windows Explorer.")
         self.btn_view_log = ctk.CTkButton(self.button_frame, text="View Log", command=self.open_log_file); self.btn_view_log.pack(side="left", padx=5, pady=5)
+        add_tooltip(self.btn_view_log, "Open the text log that records app actions and moved papers.")
         
         self.log_textbox = ctk.CTkTextbox(self.bottom_frame, activate_scrollbars=True); self.log_textbox.grid(row=1, column=0, padx=0, pady=(0, 10), sticky="nsew")
         self.redirector = TextboxRedirector(self.log_textbox)

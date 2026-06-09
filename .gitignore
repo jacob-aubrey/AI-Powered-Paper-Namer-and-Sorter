@@ -8,6 +8,7 @@ venv/
 build/
 dist/
 *.log
+paper_sorter_log.txt
 
 # Local configuration and generated archives
 config.json
