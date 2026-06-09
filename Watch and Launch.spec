@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['watch_and_launch.py'],
+    ['src\\watch_and_launch.py'],
     pathex=[],
     binaries=[],
     datas=[],

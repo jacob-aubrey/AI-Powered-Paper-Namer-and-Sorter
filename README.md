@@ -6,13 +6,20 @@ The app reads the first pages of each PDF, asks Gemini to extract paper metadata
 
 ## Source Files
 
-- `Python Scripts and Miscelaneous Files/ai_paper_sorter.py` - main GUI app.
-- `Python Scripts and Miscelaneous Files/core_logic.py` - PDF extraction, Gemini parsing, filename validation, and path helpers.
-- `Python Scripts and Miscelaneous Files/gui_components.py` - reusable GUI components.
-- `Python Scripts and Miscelaneous Files/watch_and_launch.py` - optional companion watcher/launcher.
+- `src/main.py` - small entry point that starts the app.
+- `src/app.py` - main GUI and sorting workflow.
+- `src/core_logic.py` - PDF extraction, Gemini parsing, filename validation, and path helpers.
+- `src/settings.py` - per-PC settings loading and saving.
+- `src/watch_and_launch.py` - optional companion watcher/launcher.
+- `assets/` - app icons.
 
 ## Configuration
 
-Copy `Python Scripts and Miscelaneous Files/config.example.json` to `config.json` next to the app or executable, then edit the paths.
+The app has a Settings button in the top-right corner. On first run, or when folders are missing, it prompts the user to choose:
+
+- `To Sort folder`
+- `Sorted papers root folder`
+
+Those settings are saved per PC. A `config.example.json` file is included for reference.
 
 The app also requires a `GEMINI_API_KEY` environment variable.

@@ -1,6 +1,6 @@
 """
 watch_and_launch.py
-Continuously watches the ToSort folder defined in config.json.
+Continuously watches the configured To Sort folder.
 Whenever a new PDF is dropped in, it launches the AI Paper Sorter GUI
 (if it is not already running).
 """
@@ -8,11 +8,12 @@ Whenever a new PDF is dropped in, it launches the AI Paper Sorter GUI
 import sys
 import os
 import time
-import json
 import subprocess
 from pathlib import Path
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
+
+from settings import SettingsManager
 
 # ----------------------------
 # Environment & paths
@@ -24,29 +25,13 @@ def _script_dir() -> Path:
 
 SCRIPT_DIR = _script_dir()
 
-# Load configuration (must live next to this exe/script)
-CONFIG_PATH = SCRIPT_DIR / "config.json"
-if not CONFIG_PATH.exists():
-    raise FileNotFoundError(f"config.json not found at: {CONFIG_PATH}")
-
-with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-    config = json.load(f)
-
-WATCH_FOLDER = Path(config.get("watch_folder", "")).expanduser().resolve()
-SORTED_FOLDER = Path(config.get("sorted_folder", "")).expanduser().resolve()
-
-WATCH_FOLDER.mkdir(parents=True, exist_ok=True)
-SORTED_FOLDER.mkdir(parents=True, exist_ok=True)
-
 # Candidate GUI exe paths (both one-dir and one-file layouts supported)
 GUI_EXE_CANDIDATES = [
-    SCRIPT_DIR.parent / "paper_sorter_gui" / "AI Paper Sorter.exe",  # one-dir build
-    SCRIPT_DIR / "paper_sorter_gui" / "AI Paper Sorter.exe",
+    SCRIPT_DIR.parent / "AI Paper Sorter" / "AI Paper Sorter.exe",
     SCRIPT_DIR / "AI Paper Sorter.exe",  # one-file build in same dist
-    Path(r"C:\Paper Sorter\dist\paper_sorter_gui\AI Paper Sorter.exe"),
     Path(r"C:\Paper Sorter\dist\AI Paper Sorter.exe"),
 ]
-GUI_PY = SCRIPT_DIR / "ai_paper_sorter.py"  # fallback (source)
+GUI_PY = SCRIPT_DIR / "main.py"  # fallback (source)
 
 # ----------------------------
 # Helpers
@@ -63,7 +48,7 @@ def is_gui_running() -> bool:
             ["tasklist"], creationflags=0x08000000
         ).decode(errors="ignore").lower()
         return ("ai_paper_sorter.exe" in out) or (
-            "python.exe" in out and "ai_paper_sorter.py" in out
+            "python.exe" in out and "main.py" in out
         )
     except Exception:
         return False
@@ -81,6 +66,16 @@ def wait_until_stable(path: Path, max_wait: float = 60.0, sample_interval: float
             pass
         time.sleep(sample_interval)
     return False
+
+def load_folder_settings():
+    settings = SettingsManager(SCRIPT_DIR).load()
+    if not settings.is_complete():
+        raise FileNotFoundError("Folder settings are missing. Open AI Paper Sorter and choose folders in Settings first.")
+    watch_folder = settings.watch_folder.expanduser().resolve()
+    sorted_folder = settings.sorted_folder.expanduser().resolve()
+    watch_folder.mkdir(parents=True, exist_ok=True)
+    sorted_folder.mkdir(parents=True, exist_ok=True)
+    return watch_folder, sorted_folder
 
 def launch_gui():
     try:
@@ -134,11 +129,12 @@ class LaunchOnCreate(FileSystemEventHandler):
 # Main loop
 # ----------------------------
 def main():
+    watch_folder, _sorted_folder = load_folder_settings()
     observer = Observer()
     handler = LaunchOnCreate()
-    observer.schedule(handler, str(WATCH_FOLDER), recursive=False)
+    observer.schedule(handler, str(watch_folder), recursive=False)
     observer.start()
-    print(f"Watching {WATCH_FOLDER} for new PDFs...")
+    print(f"Watching {watch_folder} for new PDFs...")
     try:
         while True:
             time.sleep(1)  # keep running forever

@@ -2,7 +2,7 @@
 from PyInstaller.utils.hooks import collect_submodules
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('config.json', '.')]
+datas = []
 binaries = []
 hiddenimports = ['CTkMessagebox']
 hiddenimports += collect_submodules('google.generativeai')
@@ -13,7 +13,7 @@ datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 
 a = Analysis(
-    ['ai_paper_sorter.py'],
+    ['src\\main.py'],
     pathex=[],
     binaries=binaries,
     datas=datas,
@@ -43,7 +43,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['Icon.ico'],
+    icon=['assets\\Icon.ico'],
 )
 coll = COLLECT(
     exe,

@@ -1,13 +1,8 @@
-# ai_paper_sorter.py
-# CHANGES IN THIS PATCH:
-# - GUI now reads folder paths from config.json.
-# - WATCH_FOLDER and SORTED_FOLDER are no longer hardcoded.
-# - Minor adjustments to accommodate dynamic paths.
+# app.py
 
 import os
 import time
 import shutil
-import json
 import logging
 import re
 from pathlib import Path
@@ -20,18 +15,17 @@ from tkinter import filedialog
 from tkinterdnd2 import DND_FILES, TkinterDnD
 import customtkinter as ctk
 from CTkMessagebox import CTkMessagebox
-from customtkinter import CTkInputDialog
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
 from core_logic import (
     cleanup_author_string,
     get_paper_details,
-    list_dirs,
     sanitize_filename_part,
     unique_path,
     validate_pdf_filename,
 )
+from settings import AppSettings, SettingsManager
 
 # --- NEW: DnD-enabled CTk root to keep CTk overlays/alpha in sync with main window ---
 class DnDCTk(ctk.CTk, TkinterDnD.DnDWrapper):
@@ -94,60 +88,6 @@ class TextboxRedirector:
 
     def flush(self): pass
 
-class FolderPicker(ctk.CTkToplevel):
-    def __init__(self, master, root_path: Path):
-        super().__init__(master)
-        self.title("Choose Destination Folder"); self.geometry("520x360"); self.resizable(True, True)
-        self.transient(master); self.grab_set()
-        self.root_path = root_path; self.level_frames = []; self.selected_paths = []
-        self.columnconfigure(0, weight=1); self.rowconfigure(0, weight=1)
-        self.scroll = ctk.CTkScrollableFrame(self); self.scroll.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
-        self.btn_row = ctk.CTkFrame(self); self.btn_row.grid(row=1, column=0, padx=10, pady=(0,10), sticky="ew")
-        self.btn_row.columnconfigure((0,1,2), weight=1)
-        self.btn_ok = ctk.CTkButton(self.btn_row, text="Confirm", command=self._confirm); self.btn_ok.grid(row=0, column=0, padx=5, pady=5, sticky="ew")
-        self.btn_root = ctk.CTkButton(self.btn_row, text="Jump to Root", command=self._reset_to_root); self.btn_root.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
-        self.btn_cancel = ctk.CTkButton(self.btn_row, text="Cancel", command=self._cancel); self.btn_cancel.grid(row=0, column=2, padx=5, pady=5, sticky="ew")
-        self._add_level(parent=self.root_path, label_text=str(self.root_path.name or self.root_path)); self.result = None
-    def _reset_to_root(self):
-        for f in self.level_frames: f.destroy()
-        self.level_frames.clear(); self.selected_paths.clear()
-        self._add_level(parent=self.root_path, label_text=str(self.root_path.name or self.root_path))
-    def _add_level(self, parent: Path, label_text: str):
-        frame = ctk.CTkFrame(self.scroll); frame.pack(fill="x", padx=5, pady=5)
-        lbl = ctk.CTkLabel(frame, text=label_text); lbl.pack(side="left", padx=5)
-        children = list_dirs(parent); options = [p.name for p in children]; options.append("New folder..."); options.append("<Select none>")
-        var = ctk.StringVar(value="<Select none>"); om = ctk.CTkOptionMenu(frame, variable=var, values=options, command=lambda choice, parent=parent: self._on_select(choice, parent))
-        om.pack(side="left", padx=5, fill="x", expand=True)
-        self.level_frames.append(frame); self.selected_paths.append(parent)
-    def _remove_levels_after(self, index: int):
-        while len(self.level_frames) > index + 1:
-            f = self.level_frames.pop(); f.destroy(); self.selected_paths.pop()
-    def _on_select(self, choice: str, parent: Path):
-        idx = self._find_level_index_for_parent(parent)
-        if idx is None: return
-        self._remove_levels_after(idx)
-        if choice == "<Select none>": return
-        if choice == "New folder...": self._create_new_folder(parent, idx); return
-        selected = parent / choice; self.selected_paths.append(selected); self._add_level(parent=selected, label_text=f"-> {selected.name}")
-    def _create_new_folder(self, parent: Path, idx: int):
-        dialog = CTkInputDialog(text="Enter new folder name:", title="New Folder"); name = dialog.get_input()
-        if not name: return
-        clean = re.sub(r'[\/*?:"<>|]', "", name).strip()
-        if not clean: CTkMessagebox(master=self, title="Invalid Name", message="Folder name cannot be empty or only special characters."); return
-        new_path = parent / clean
-        try: new_path.mkdir(parents=True, exist_ok=False)
-        except FileExistsError: CTkMessagebox(master=self, title="Exists", message="A folder with that name already exists.")
-        except Exception as e: CTkMessagebox(master=self, title="Error", message=f"Failed to create folder: {e}")
-        self._remove_levels_after(idx-1 if idx>0 else -1); self._add_level(parent=parent, label_text=str(parent.name))
-    def _find_level_index_for_parent(self, parent: Path):
-        for i, p in enumerate(self.selected_paths):
-            if p == parent: return i
-        return None
-    def _final_path(self) -> Path:
-        return self.selected_paths[-1] if self.selected_paths else self.root_path
-    def _confirm(self): self.result = self._final_path(); self.destroy()
-    def _cancel(self): self.result = None; self.destroy()
-
 # --- NEW: Custom Dialog for Editing Filenames ---
 class FilenameEditorDialog(ctk.CTkToplevel):
     def __init__(self, master, original_name: str, ai_title: str, proposed_name: str):
@@ -189,10 +129,10 @@ class FilenameEditorDialog(ctk.CTkToplevel):
         button_frame.grid(row=2, column=0, padx=15, pady=15, sticky="sew")
         button_frame.grid_columnconfigure((0, 1), weight=1)
 
-        self.continue_button = ctk.CTkButton(button_frame, text="Continue", command=self._on_continue)
-        self.continue_button.grid(row=0, column=0, padx=5, pady=5, sticky="ew")
         self.skip_button = ctk.CTkButton(button_frame, text="Skip File", command=self._on_skip)
-        self.skip_button.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
+        self.skip_button.grid(row=0, column=0, padx=5, pady=5, sticky="ew")
+        self.continue_button = ctk.CTkButton(button_frame, text="Continue", command=self._on_continue)
+        self.continue_button.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
 
     def _on_continue(self):
         try:
@@ -206,6 +146,64 @@ class FilenameEditorDialog(ctk.CTkToplevel):
         self.result = None
         self.destroy()
 
+class SettingsDialog(ctk.CTkToplevel):
+    def __init__(self, master, settings: AppSettings):
+        super().__init__(master)
+        self.title("Settings")
+        self.geometry("720x260")
+        self.transient(master)
+        self.grab_set()
+        self.result = None
+
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+
+        frame = ctk.CTkFrame(self)
+        frame.grid(row=0, column=0, padx=16, pady=16, sticky="nsew")
+        frame.grid_columnconfigure(1, weight=1)
+
+        self.watch_var = ctk.StringVar(value=str(settings.watch_folder or ""))
+        self.sorted_var = ctk.StringVar(value=str(settings.sorted_folder or ""))
+
+        ctk.CTkLabel(frame, text="To Sort folder").grid(row=0, column=0, padx=10, pady=(14, 6), sticky="w")
+        ctk.CTkEntry(frame, textvariable=self.watch_var).grid(row=0, column=1, padx=10, pady=(14, 6), sticky="ew")
+        ctk.CTkButton(frame, text="Browse", width=90, command=self._browse_watch).grid(row=0, column=2, padx=10, pady=(14, 6))
+
+        ctk.CTkLabel(frame, text="Sorted papers root").grid(row=1, column=0, padx=10, pady=6, sticky="w")
+        ctk.CTkEntry(frame, textvariable=self.sorted_var).grid(row=1, column=1, padx=10, pady=6, sticky="ew")
+        ctk.CTkButton(frame, text="Browse", width=90, command=self._browse_sorted).grid(row=1, column=2, padx=10, pady=6)
+
+        button_frame = ctk.CTkFrame(self, fg_color="transparent")
+        button_frame.grid(row=1, column=0, padx=16, pady=(0, 16), sticky="ew")
+        button_frame.grid_columnconfigure((0, 1), weight=1)
+        ctk.CTkButton(button_frame, text="Cancel", command=self._cancel).grid(row=0, column=0, padx=6, sticky="ew")
+        ctk.CTkButton(button_frame, text="Save", command=self._save).grid(row=0, column=1, padx=6, sticky="ew")
+
+    def _browse_watch(self):
+        initial = self.watch_var.get() or str(Path.home())
+        selected = filedialog.askdirectory(parent=self, title="Choose To Sort folder", initialdir=initial)
+        if selected:
+            self.watch_var.set(selected)
+
+    def _browse_sorted(self):
+        initial = self.sorted_var.get() or str(Path.home())
+        selected = filedialog.askdirectory(parent=self, title="Choose Sorted papers root", initialdir=initial)
+        if selected:
+            self.sorted_var.set(selected)
+
+    def _save(self):
+        watch = self.watch_var.get().strip()
+        sorted_folder = self.sorted_var.get().strip()
+        if not watch or not sorted_folder:
+            CTkMessagebox(master=self, title="Missing Folders", message="Choose both folders before saving.", icon="warning")
+            return
+        self.result = AppSettings(watch_folder=Path(watch).expanduser(), sorted_folder=Path(sorted_folder).expanduser())
+        self.destroy()
+
+    def _cancel(self):
+        self.result = None
+        self.destroy()
+
 class App:
     def __init__(self, root):
         self.root = root
@@ -216,18 +214,14 @@ class App:
         if getattr(sys, 'frozen', False): self.SCRIPT_DIRECTORY = Path(sys.executable).parent
         else: self.SCRIPT_DIRECTORY = Path(__file__).parent
         self.API_KEY = os.getenv('GEMINI_API_KEY')
-        
-        # --- NEW: Load configuration from config.json ---
-        try:
-            CONFIG_PATH = self.SCRIPT_DIRECTORY / "config.json"
-            with open(CONFIG_PATH, "r") as f:
-                config = json.load(f)
-            self.WATCH_FOLDER = Path(config["watch_folder"])
-            self.SORTED_FOLDER = Path(config["sorted_folder"])
-        except Exception as e:
-            CTkMessagebox(master=self.root, title="Configuration Error", message=f"Failed to load config.json:\n{e}", icon="error")
+
+        self.settings_manager = SettingsManager(self.SCRIPT_DIRECTORY)
+        self.settings = self.settings_manager.load()
+        if not self._ensure_settings():
             self.root.destroy()
             return
+        self.WATCH_FOLDER = self.settings.watch_folder
+        self.SORTED_FOLDER = self.settings.sorted_folder
         
         # Unified log for both sorting and naming
         self.LOG_FILE = self.SORTED_FOLDER / 'paper_sorter_log.txt'
@@ -244,6 +238,8 @@ class App:
         # DnD registration on a CTk frame still works because root is DnD-enabled (DnDCTk)
         self.top_frame.drop_target_register(DND_FILES); self.top_frame.dnd_bind('<<Drop>>', self.handle_drop)
         self.plus_label = ctk.CTkLabel(self.top_frame, text="+", font=ctk.CTkFont(size=50)); self.plus_label.grid(row=0, column=0, pady=(20, 0))
+        self.settings_button = ctk.CTkButton(self.top_frame, text="Settings", width=96, command=self.open_settings)
+        self.settings_button.grid(row=0, column=0, padx=14, pady=14, sticky="ne")
         self.browse_text_frame = ctk.CTkFrame(self.top_frame, fg_color="transparent"); self.browse_text_frame.grid(row=1, column=0, pady=(10, 20))
         self.drag_label = ctk.CTkLabel(self.browse_text_frame, text="To sort papers, drag them here, or ", font=ctk.CTkFont(size=14)); self.drag_label.pack(side="left")
         self.browse_label = ctk.CTkLabel(self.browse_text_frame, text="browse", font=ctk.CTkFont(size=14, underline=True), text_color=("blue", "cyan"), cursor="hand2")
@@ -283,6 +279,53 @@ class App:
             self.root.focus_force()
         except Exception:
             pass
+
+    def _ensure_settings(self):
+        if self.settings and self.settings.is_complete():
+            return True
+        return self.open_settings()
+
+    def open_settings(self):
+        dialog = SettingsDialog(self.root, self.settings or AppSettings())
+        self.root.wait_window(dialog)
+        self._normalize_root()
+        if not dialog.result:
+            return False
+        try:
+            dialog.result.watch_folder.mkdir(parents=True, exist_ok=True)
+            dialog.result.sorted_folder.mkdir(parents=True, exist_ok=True)
+            self.settings_manager.save(dialog.result)
+        except Exception as e:
+            CTkMessagebox(master=self.root, title="Settings Error", message=f"Could not save settings:\n{e}", icon="error")
+            return False
+        self.settings = dialog.result
+        self.WATCH_FOLDER = self.settings.watch_folder
+        self.SORTED_FOLDER = self.settings.sorted_folder
+        self.LOG_FILE = self.SORTED_FOLDER / 'paper_sorter_log.txt'
+        if hasattr(self, "redirector"):
+            self._replace_log_file_handler()
+        logging.info(f"Settings saved. To Sort: {self.WATCH_FOLDER}; Sorted: {self.SORTED_FOLDER}")
+        if hasattr(self, "observer"):
+            try:
+                self.observer.stop()
+                self.observer.join(timeout=3)
+            except Exception:
+                pass
+            self.start_watcher()
+            self.process_existing_files()
+        return True
+
+    def _replace_log_file_handler(self):
+        root_logger = logging.getLogger()
+        formatter = logging.Formatter('%(asctime)s - %(message)s')
+        for handler in list(root_logger.handlers):
+            if isinstance(handler, logging.FileHandler):
+                root_logger.removeHandler(handler)
+                handler.close()
+        file_handler = logging.FileHandler(self.LOG_FILE, encoding='utf-8')
+        file_handler.setFormatter(formatter)
+        root_logger.addHandler(file_handler)
+        root_logger.setLevel(logging.INFO)
 
     def start_app(self):
         if not self.API_KEY: logging.error("FATAL: GEMINI_API_KEY not set."); return
@@ -385,7 +428,7 @@ class App:
         final_filename_base = Path(final_filename).stem
         if list(self.SORTED_FOLDER.rglob(f"{final_filename_base}*.pdf")):
             msg_text = (f"A potential duplicate exists for:'{final_filename}'\n\nAdd anyway?")
-            msg = CTkMessagebox(master=self.root, title="Suspected Duplicate", message=msg_text, icon="question", option_1="Add Anyway", option_2="Skip")
+            msg = CTkMessagebox(master=self.root, title="Suspected Duplicate", message=msg_text, icon="question", option_1="Skip", option_2="Add Anyway")
             choice = msg.get()
             self._normalize_root()  # <-- normalize after modal
             if choice == "Skip":
@@ -393,11 +436,7 @@ class App:
                 return
         
         # --- STEP 3: Choose the destination folder ---
-        picker = FolderPicker(self.root, self.SORTED_FOLDER)
-        self.root.wait_window(picker)
-        self._normalize_root()  # <-- normalize after modal
-        dest_folder = picker.result
-        
+        dest_folder = self.choose_destination_folder()
         if not dest_folder: 
             logging.info(f"User canceled destination selection for '{pdf_path.name}'."); return
 
@@ -410,7 +449,7 @@ class App:
         except ValueError:
             folder_display = str(final_destination_path.parent)
         confirm_text = (f"Destination Folder:\n{folder_display}\n\nFilename:\n{final_destination_path.name}")
-        confirm_msg = CTkMessagebox(master=self.root, title="Confirm Move", message=confirm_text, icon="question", option_1="Confirm", option_2="Cancel")
+        confirm_msg = CTkMessagebox(master=self.root, title="Confirm Move", message=confirm_text, icon="question", option_1="Cancel", option_2="Confirm")
         confirm_choice = confirm_msg.get()
         self._normalize_root()  # <-- normalize after modal
         
@@ -428,6 +467,35 @@ class App:
             logging.error(f"Failed to move file: {e}")
         finally:
             self._normalize_root()  # extra safety
+
+    def choose_destination_folder(self):
+        if not self._ensure_settings():
+            return None
+        selected = filedialog.askdirectory(
+            parent=self.root,
+            title="Choose Destination Folder",
+            initialdir=str(self.SORTED_FOLDER),
+            mustexist=False,
+        )
+        self._normalize_root()
+        if not selected:
+            return None
+        dest = Path(selected)
+        try:
+            dest.relative_to(self.SORTED_FOLDER)
+            return dest
+        except ValueError:
+            msg = CTkMessagebox(
+                master=self.root,
+                title="Outside Sorted Folder",
+                message="This folder is outside your sorted papers root. Use it anyway?",
+                icon="question",
+                option_1="Cancel",
+                option_2="Use Anyway",
+            )
+            choice = msg.get()
+            self._normalize_root()
+            return dest if choice == "Use Anyway" else None
 
     # (The rename flow can also be updated to use the new dialog if desired)
     def rename_papers_flow(self):
@@ -522,6 +590,8 @@ class App:
             logging.info("No PDF files found; ToSort folder is empty.")
 
     def select_and_add_papers(self):
+        if not self._ensure_settings():
+            return
         selected_files = filedialog.askopenfilenames(title="Select PDF files to add", filetypes=[("PDF Documents", "*.pdf")])
         if not selected_files: logging.info("No files selected."); return
         added = 0
@@ -534,6 +604,8 @@ class App:
         logging.info(f"User added {added} paper(s) to the ToSort folder.")
         
     def handle_drop(self, event):
+        if not self._ensure_settings():
+            return
         file_paths_str = self.root.tk.splitlist(event.data); added_count = 0
         for path_str in file_paths_str:
             source_path = Path(path_str)
@@ -550,8 +622,3 @@ class App:
         # Open the unified log file in the default text editor
         import os
         os.startfile(self.LOG_FILE)
-
-if __name__ == "__main__":
-    root = DnDCTk()
-    app = App(root)
-    root.mainloop()
