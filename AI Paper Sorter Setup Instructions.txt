@@ -5,60 +5,64 @@ AI Paper Sorter - Setup Guide
 This program uses Google's Gemini AI model to read and organize research papers.
 
 To work correctly, you need:
-1) A Gemini API key
-2) Folder settings chosen inside the app
+1) Folder settings chosen inside the app
+2) A Gemini API key only if you want AI naming
 
 ---------------------------------------
-1. Get your Gemini API Key
+1. Choose Folders in Settings
 ---------------------------------------
-1) Go to: https://aistudio.google.com/app/apikey
-2) Sign in with your Google account.
-3) Click "Create API key".
-4) Copy the key shown.
-
----------------------------------------
-2. Save the Key on Your Computer
----------------------------------------
-You only need to do this once per PC.
-
-Windows PowerShell:
-
-   setx GEMINI_API_KEY "YOUR_KEY"
-
-Close PowerShell and restart your computer, or at least log out and back in.
-
-Mac / Linux terminal:
-
-   export GEMINI_API_KEY="YOUR_KEY"
-
-To make it permanent, add that line to your shell profile.
-
----------------------------------------
-3. Choose Folders in Settings
----------------------------------------
-When you first run the app, it will ask you to choose:
+When you first sort a paper, the app will ask you to choose:
 
 - To Sort folder: where new PDFs are copied/watched.
 - Sorted papers root: the main folder where organized papers are saved.
 
-You can change these later with the Settings button in the top-right corner.
+You can change these later with the Settings button in the top toolbar.
 The app saves these settings on each PC.
+
+---------------------------------------
+2. Choose a Naming Mode
+---------------------------------------
+The Settings window has three naming modes:
+
+- Automatic: use AI when a Gemini key exists, otherwise use Basic naming.
+- AI: prefer Gemini naming; falls back to Basic if AI is unavailable.
+- Basic: use PDF metadata, first-page text, and the original filename.
+
+Basic naming does not require an API key.
+
+---------------------------------------
+3. Optional: Set Up AI Naming
+---------------------------------------
+AI naming uses Google's Gemini API.
+
+1) Open Settings.
+2) Click "Get Key".
+3) Create a Gemini API key in Google AI Studio.
+4) Paste the key into the Gemini API key field.
+5) Set Naming mode to Automatic or AI.
+
+Advanced users can also set the GEMINI_API_KEY environment variable.
+
+Windows PowerShell:
+
+   setx GEMINI_API_KEY "YOUR_KEY"
 
 ---------------------------------------
 4. Run the Program
 ---------------------------------------
 Double-click the AI Paper Sorter executable.
 
-The program will automatically use your API key and saved folder settings.
-
 ---------------------------------------
 5. Troubleshooting
 ---------------------------------------
-- If the program says "FATAL: GEMINI_API_KEY not set."
-  Set the API key again and restart.
+- If AI naming is not set up
+  Use Basic naming, or add a Gemini key in Settings.
 
-- If the app asks for folders again
+- If the app asks for folders
   Choose both folders in Settings and click Save.
+
+- If the program says "FATAL: GEMINI_API_KEY not set."
+  This should no longer block Basic naming. Open Settings to add a key if you want AI naming.
 
 - If a PDF is moved successfully
   The bottom log panel will show View Location and View Paper links.

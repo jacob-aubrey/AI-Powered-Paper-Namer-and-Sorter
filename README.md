@@ -4,6 +4,8 @@ AI Paper Sorter is a Windows Python desktop app for sorting and renaming researc
 
 The app reads the first pages of each PDF, asks Gemini to extract paper metadata, proposes a filename, lets the user approve or edit it, then moves the paper into a selected folder under the configured sorted-paper library.
 
+AI naming is optional. If no Gemini API key is configured, the app can still use Basic naming from PDF metadata, first-page text, and the original filename.
+
 ## Source Files
 
 - `src/main.py` - small entry point that starts the app.
@@ -19,7 +21,15 @@ The app has a Settings button in the top-right corner. On first run, or when fol
 
 - `To Sort folder`
 - `Sorted papers root folder`
+- `Naming mode`
+- Optional `Gemini API key`
 
 Those settings are saved per PC. A `config.example.json` file is included for reference.
 
-The app also requires a `GEMINI_API_KEY` environment variable.
+Naming modes:
+
+- `Automatic` - use AI when a Gemini key exists, otherwise use Basic naming.
+- `AI` - prefer Gemini naming; falls back to Basic if no key is available or AI fails.
+- `Basic` - never uses Gemini.
+
+The app can read a Gemini key from Settings or from the `GEMINI_API_KEY` environment variable.

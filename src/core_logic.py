@@ -49,6 +49,74 @@ def get_paper_details(pdf_path: Path, api_key: str):
         logging.error(f"AI processing error for {pdf_path.name}: {e}")
         return None
 
+def get_basic_paper_details(pdf_path: Path):
+    try:
+        reader = PdfReader(pdf_path)
+        metadata = reader.metadata or {}
+        title = _clean_metadata_value(metadata.get("/Title")) or _title_from_first_page(reader) or pdf_path.stem
+        author = _first_author_from_metadata(metadata.get("/Author")) or "Unknown"
+        year = _year_from_metadata(metadata) or _year_from_first_pages(reader) or "Unknown"
+        journal = "Unknown"
+        return {
+            "author": author,
+            "year": year,
+            "journal": journal,
+            "title": title,
+            "is_multiple_authors": True,
+            "source": "Basic",
+        }
+    except Exception as e:
+        logging.error(f"Basic processing error for {pdf_path.name}: {e}")
+        return {
+            "author": "Unknown",
+            "year": "Unknown",
+            "journal": "Unknown",
+            "title": pdf_path.stem,
+            "is_multiple_authors": True,
+            "source": "Basic",
+        }
+
+def _clean_metadata_value(value):
+    if not value:
+        return ""
+    return re.sub(r"\s+", " ", str(value)).strip()
+
+def _first_author_from_metadata(value):
+    author = _clean_metadata_value(value)
+    if not author:
+        return ""
+    author = re.split(r";|\band\b|,", author, maxsplit=1, flags=re.IGNORECASE)[0]
+    parts = [p for p in re.split(r"\s+", author.strip()) if p]
+    return parts[-1] if parts else ""
+
+def _year_from_metadata(metadata):
+    for key in ("/CreationDate", "/ModDate", "/Subject"):
+        value = _clean_metadata_value(metadata.get(key))
+        match = re.search(r"(19|20)\d{2}", value)
+        if match:
+            return match.group(0)
+    return ""
+
+def _year_from_first_pages(reader):
+    text = ""
+    for page in reader.pages[:2]:
+        extracted = page.extract_text()
+        if extracted:
+            text += extracted + "\n"
+    match = re.search(r"\b(19|20)\d{2}\b", text)
+    return match.group(0) if match else ""
+
+def _title_from_first_page(reader):
+    if not reader.pages:
+        return ""
+    text = reader.pages[0].extract_text() or ""
+    lines = [re.sub(r"\s+", " ", line).strip() for line in text.splitlines()]
+    candidates = [
+        line for line in lines[:12]
+        if 12 <= len(line) <= 180 and not re.search(r"^(abstract|keywords|doi|http|www\.|received|accepted)\b", line, re.IGNORECASE)
+    ]
+    return max(candidates, key=len) if candidates else ""
+
 def sanitize_filename_part(part):
     return re.sub(r'[\\/*?:"<>|]', "", str(part).strip()).replace(' ', '_')
 

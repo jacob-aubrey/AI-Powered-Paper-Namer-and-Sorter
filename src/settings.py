@@ -7,9 +7,14 @@ from pathlib import Path
 class AppSettings:
     watch_folder: Path | None = None
     sorted_folder: Path | None = None
+    api_key: str = ""
+    naming_mode: str = "Automatic"
 
     def is_complete(self) -> bool:
         return bool(self.watch_folder and self.sorted_folder)
+
+    def clean_naming_mode(self) -> str:
+        return self.naming_mode if self.naming_mode in {"Automatic", "AI", "Basic"} else "Automatic"
 
 
 class SettingsManager:
@@ -30,18 +35,29 @@ class SettingsManager:
                 with open(path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 return AppSettings(
-                    watch_folder=Path(data["watch_folder"]).expanduser(),
-                    sorted_folder=Path(data["sorted_folder"]).expanduser(),
+                    watch_folder=Path(data["watch_folder"]).expanduser() if data.get("watch_folder") else None,
+                    sorted_folder=Path(data["sorted_folder"]).expanduser() if data.get("sorted_folder") else None,
+                    api_key=data.get("api_key", ""),
+                    naming_mode=data.get("naming_mode", "Automatic"),
                 )
             except Exception:
                 continue
         return AppSettings()
 
     def save(self, settings: AppSettings):
-        self.config_path.parent.mkdir(parents=True, exist_ok=True)
         data = {
             "watch_folder": str(settings.watch_folder),
             "sorted_folder": str(settings.sorted_folder),
+            "api_key": settings.api_key,
+            "naming_mode": settings.clean_naming_mode(),
         }
-        with open(self.config_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
+        for path in (self.config_path, self.script_directory / "config.json"):
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2)
+                self.config_path = path
+                return
+            except OSError:
+                continue
+        raise OSError("Could not save settings to AppData or the app folder.")

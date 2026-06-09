@@ -1,4 +1,6 @@
 {
   "watch_folder": "C:\\Paper Sorter\\ToSort",
-  "sorted_folder": "C:\\Paper Sorter\\Sorted"
+  "sorted_folder": "C:\\Paper Sorter\\Sorted",
+  "api_key": "",
+  "naming_mode": "Automatic"
 }

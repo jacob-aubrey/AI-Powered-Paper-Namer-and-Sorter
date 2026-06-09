@@ -20,6 +20,7 @@ from watchdog.events import FileSystemEventHandler
 
 from core_logic import (
     cleanup_author_string,
+    get_basic_paper_details,
     get_paper_details,
     sanitize_filename_part,
     unique_path,
@@ -162,7 +163,7 @@ class FilenameEditorDialog(ctk.CTkToplevel):
         ctk.CTkLabel(info_frame, text="Original File:", font=ctk.CTkFont(weight="bold")).grid(row=0, column=0, sticky="w")
         ctk.CTkLabel(info_frame, text=original_name, wraplength=450).grid(row=0, column=1, sticky="w", padx=5)
         
-        ctk.CTkLabel(info_frame, text="AI-Detected Title:", font=ctk.CTkFont(weight="bold")).grid(row=1, column=0, sticky="w", pady=(5,0))
+        ctk.CTkLabel(info_frame, text="Detected Title:", font=ctk.CTkFont(weight="bold")).grid(row=1, column=0, sticky="w", pady=(5,0))
         ctk.CTkLabel(info_frame, text=ai_title, wraplength=450).grid(row=1, column=1, sticky="w", padx=5, pady=(5,0))
 
         # Entry Frame
@@ -203,7 +204,7 @@ class SettingsDialog(ctk.CTkToplevel):
     def __init__(self, master, settings: AppSettings):
         super().__init__(master)
         self.title("Settings")
-        self.geometry("720x260")
+        self.geometry("760x360")
         self.transient(master)
         self.grab_set()
         self.result = None
@@ -217,6 +218,8 @@ class SettingsDialog(ctk.CTkToplevel):
 
         self.watch_var = ctk.StringVar(value=str(settings.watch_folder or ""))
         self.sorted_var = ctk.StringVar(value=str(settings.sorted_folder or ""))
+        self.api_key_var = ctk.StringVar(value=settings.api_key or "")
+        self.naming_mode_var = ctk.StringVar(value=settings.clean_naming_mode())
 
         ctk.CTkLabel(frame, text="To Sort folder").grid(row=0, column=0, padx=10, pady=(14, 6), sticky="w")
         ctk.CTkEntry(frame, textvariable=self.watch_var).grid(row=0, column=1, padx=10, pady=(14, 6), sticky="ew")
@@ -229,6 +232,19 @@ class SettingsDialog(ctk.CTkToplevel):
         self.sorted_browse_button = ctk.CTkButton(frame, text="Browse", width=90, command=self._browse_sorted)
         self.sorted_browse_button.grid(row=1, column=2, padx=10, pady=6)
         add_tooltip(self.sorted_browse_button, "Choose the root folder where sorted and renamed papers are stored.")
+
+        ctk.CTkLabel(frame, text="Naming mode").grid(row=2, column=0, padx=10, pady=6, sticky="w")
+        self.naming_mode_menu = ctk.CTkOptionMenu(frame, variable=self.naming_mode_var, values=["Automatic", "AI", "Basic"])
+        self.naming_mode_menu.grid(row=2, column=1, padx=10, pady=6, sticky="w")
+        add_tooltip(self.naming_mode_menu, "Automatic uses AI when a key exists, otherwise Basic naming.")
+
+        ctk.CTkLabel(frame, text="Gemini API key").grid(row=3, column=0, padx=10, pady=6, sticky="w")
+        self.api_key_entry = ctk.CTkEntry(frame, textvariable=self.api_key_var, show="*")
+        self.api_key_entry.grid(row=3, column=1, padx=10, pady=6, sticky="ew")
+        add_tooltip(self.api_key_entry, "Optional. Add a Gemini key to enable AI naming on this PC.")
+        self.api_help_button = ctk.CTkButton(frame, text="Get Key", width=90, command=self._show_api_help)
+        self.api_help_button.grid(row=3, column=2, padx=10, pady=6)
+        add_tooltip(self.api_help_button, "Show concise setup instructions for Gemini AI naming.")
 
         button_frame = ctk.CTkFrame(self, fg_color="transparent")
         button_frame.grid(row=1, column=0, padx=16, pady=(0, 16), sticky="ew")
@@ -258,12 +274,32 @@ class SettingsDialog(ctk.CTkToplevel):
         if not watch or not sorted_folder:
             CTkMessagebox(master=self, title="Missing Folders", message="Choose both folders before saving.", icon="warning")
             return
-        self.result = AppSettings(watch_folder=Path(watch).expanduser(), sorted_folder=Path(sorted_folder).expanduser())
+        self.result = AppSettings(
+            watch_folder=Path(watch).expanduser(),
+            sorted_folder=Path(sorted_folder).expanduser(),
+            api_key=self.api_key_var.get().strip(),
+            naming_mode=self.naming_mode_var.get(),
+        )
         self.destroy()
 
     def _cancel(self):
         self.result = None
         self.destroy()
+
+    def _show_api_help(self):
+        webbrowser.open("https://aistudio.google.com/app/apikey")
+        CTkMessagebox(
+            master=self,
+            title="Gemini API Key",
+            message=(
+                "AI naming is optional.\n\n"
+                "1. Create a Gemini API key in Google AI Studio.\n"
+                "2. Paste it into the Gemini API key field.\n"
+                "3. Set Naming mode to Automatic or AI.\n\n"
+                "Without a key, Basic naming still works."
+            ),
+            icon="info",
+        )
 
 class App:
     def __init__(self, root):
@@ -274,7 +310,7 @@ class App:
 
         if getattr(sys, 'frozen', False): self.SCRIPT_DIRECTORY = Path(sys.executable).parent
         else: self.SCRIPT_DIRECTORY = Path(__file__).parent
-        self.API_KEY = os.getenv('GEMINI_API_KEY')
+        self.ENV_API_KEY = os.getenv('GEMINI_API_KEY', '')
 
         self.settings_manager = SettingsManager(self.SCRIPT_DIRECTORY)
         self.settings = self.settings_manager.load()
@@ -304,10 +340,10 @@ class App:
         self.btn_name_papers = ctk.CTkButton(self.toolbar_buttons, text="✎ Name Papers", width=130, command=self.rename_papers_flow)
         self.btn_name_papers.pack(side="left", padx=4)
         add_tooltip(self.btn_name_papers, "Use Gemini to rename PDFs in place without moving them into a sorted folder.")
-        self.btn_view_sorted = ctk.CTkButton(self.toolbar_buttons, text="▣ Sorted", width=96, command=self.open_sorted_folder)
+        self.btn_view_sorted = ctk.CTkButton(self.toolbar_buttons, text="📁 Sorted", width=96, command=self.open_sorted_folder)
         self.btn_view_sorted.pack(side="left", padx=4)
         add_tooltip(self.btn_view_sorted, "Open the configured sorted-paper root folder in Windows Explorer.")
-        self.btn_view_log = ctk.CTkButton(self.toolbar_buttons, text="≡ Log", width=82, command=self.open_log_file)
+        self.btn_view_log = ctk.CTkButton(self.toolbar_buttons, text="📋✎ Log", width=96, command=self.open_log_file)
         self.btn_view_log.pack(side="left", padx=4)
         add_tooltip(self.btn_view_log, "Open the text log that records app actions and moved papers.")
         self.settings_button = ctk.CTkButton(self.toolbar_buttons, text="⚙ Settings", width=112, command=self.open_settings)
@@ -407,7 +443,8 @@ class App:
         root_logger.setLevel(logging.INFO)
 
     def start_app(self):
-        if not self.API_KEY: logging.error("FATAL: GEMINI_API_KEY not set."); return
+        if not self._active_api_key():
+            logging.info("Gemini API key is not set. Basic naming is available. To enable AI naming, open Settings, click Get Key, and paste your key.")
         self.worker_thread = threading.Thread(target=self.processing_loop, daemon=True); self.worker_thread.start()
         self.rename_worker_thread = threading.Thread(target=self.rename_processing_loop, daemon=True); self.rename_worker_thread.start()
         if self.settings.is_complete():
@@ -465,7 +502,7 @@ class App:
                     logging.warning(f"File disappeared before sorting: {pdf_path.name}")
                     continue
                 logging.info(f"--- Processing (sort): {pdf_path.name} ---")
-                details = get_paper_details(pdf_path, self.API_KEY)
+                details = self._get_details_for_pdf(pdf_path)
                 if details:
                     clear_when_done = False
                     self.gui_queue.put(("sort", pdf_path, details))
@@ -477,11 +514,46 @@ class App:
         while True:
             pdf_path = self.rename_queue.get()
             logging.info(f"--- Processing (rename): {pdf_path.name} ---")
-            details = get_paper_details(pdf_path, self.API_KEY)
+            details = self._get_details_for_pdf(pdf_path)
             if details: self.gui_queue.put(("rename", pdf_path, details))
             else:
                 logging.error(f"Could not get details for {pdf_path.name}.")
                 self.gui_queue.put(("rename_failed", pdf_path, {}))
+
+    def _active_api_key(self):
+        return (self.settings.api_key if self.settings else "") or self.ENV_API_KEY
+
+    def _get_details_for_pdf(self, pdf_path: Path):
+        mode = self.settings.clean_naming_mode() if self.settings else "Automatic"
+        api_key = self._active_api_key()
+        if mode == "Basic" or not api_key:
+            if mode == "AI" and not api_key:
+                logging.warning("AI naming was selected, but no Gemini API key is set. Using Basic naming instead.")
+            return get_basic_paper_details(pdf_path)
+
+        details = get_paper_details(pdf_path, api_key)
+        if details:
+            details["source"] = "AI"
+            return details
+        logging.warning(f"AI naming failed for {pdf_path.name}. Using Basic naming instead.")
+        return get_basic_paper_details(pdf_path)
+
+    def _proposed_filename(self, details: dict) -> str:
+        source = details.get("source", "AI")
+        author = cleanup_author_string(details.get('author', 'Unknown'))
+        year = details.get('year', 'Unknown')
+        journal = details.get('journal', 'Unknown')
+        title = details.get('title', 'Unknown Title')
+        is_multiple = bool(details.get('is_multiple_authors', True))
+
+        if source == "Basic" and (author == "Unknown" or journal == "Unknown"):
+            title_part = sanitize_filename_part(title)[:90] or "Paper"
+            year_part = sanitize_filename_part(year)
+            return f"{title_part}_{year_part}.pdf"
+
+        author_string = f"{author} et al" if is_multiple else author
+        new_filename_base = f"{sanitize_filename_part(author_string)}_{sanitize_filename_part(journal)}_{year}"
+        return f"{new_filename_base}.pdf"
     def process_gui_queue(self):
         try:
             while not self.gui_queue.empty():
@@ -499,11 +571,7 @@ class App:
     # --- FIXED: Reworked function + normalization after every modal ---
     def handle_user_confirmation_sort(self, pdf_path: Path, details: dict):
         details['author'] = cleanup_author_string(details.get('author', 'Unknown'))
-        author = details.get('author', 'Unknown'); year = details.get('year', 'Unknown')
-        journal = details.get('journal', 'Unknown'); is_multiple = bool(details.get('is_multiple_authors', True))
-        author_string = f"{author} et al" if is_multiple else author
-        new_filename_base = f"{sanitize_filename_part(author_string)}_{sanitize_filename_part(journal)}_{year}"
-        new_filename_ext = f"{new_filename_base}.pdf"; title = details.get('title', 'Unknown Title')
+        new_filename_ext = self._proposed_filename(details); title = details.get('title', 'Unknown Title')
         
         # --- STEP 1: Propose and Edit Name ---
         name_dialog = FilenameEditorDialog(self.root, original_name=pdf_path.name, ai_title=title, proposed_name=new_filename_ext)
@@ -626,13 +694,7 @@ class App:
         logging.info(f"Queued {self.rename_batch_total} PDF(s) for AI naming.")
     def handle_rename_confirmation(self, pdf_path: Path, details: dict):
         details['author'] = cleanup_author_string(details.get('author', 'Unknown'))
-        author = details.get('author', 'Unknown')
-        year = details.get('year', 'Unknown')
-        journal = details.get('journal', 'Unknown')
-        is_multiple = bool(details.get('is_multiple_authors', True))
-        author_string = f"{author} et al" if is_multiple else author
-        new_filename_base = f"{sanitize_filename_part(author_string)}_{sanitize_filename_part(journal)}_{year}"
-        new_filename_ext = f"{new_filename_base}.pdf"
+        new_filename_ext = self._proposed_filename(details)
         title = details.get('title', 'Unknown Title')
 
         name_dialog = FilenameEditorDialog(self.root, original_name=pdf_path.name, ai_title=title, proposed_name=new_filename_ext)
