@@ -217,16 +217,14 @@ class App:
 
         self.settings_manager = SettingsManager(self.SCRIPT_DIRECTORY)
         self.settings = self.settings_manager.load()
-        if not self._ensure_settings():
-            self.root.destroy()
-            return
         self.WATCH_FOLDER = self.settings.watch_folder
         self.SORTED_FOLDER = self.settings.sorted_folder
-        
+
         # Unified log for both sorting and naming
-        self.LOG_FILE = self.SORTED_FOLDER / 'paper_sorter_log.txt'
-        self.WATCH_FOLDER.mkdir(parents=True, exist_ok=True)
-        self.SORTED_FOLDER.mkdir(parents=True, exist_ok=True)
+        self.LOG_FILE = self._default_log_file()
+        if self.settings.is_complete():
+            self.WATCH_FOLDER.mkdir(parents=True, exist_ok=True)
+            self.SORTED_FOLDER.mkdir(parents=True, exist_ok=True)
         
         self.main_frame = ctk.CTkFrame(self.root)
         self.main_frame.grid(row=0, column=0, sticky="nsew")
@@ -285,6 +283,11 @@ class App:
             return True
         return self.open_settings()
 
+    def _default_log_file(self):
+        if self.settings and self.settings.sorted_folder:
+            return self.settings.sorted_folder / 'paper_sorter_log.txt'
+        return self.SCRIPT_DIRECTORY / 'paper_sorter_log.txt'
+
     def open_settings(self):
         dialog = SettingsDialog(self.root, self.settings or AppSettings())
         self.root.wait_window(dialog)
@@ -301,7 +304,7 @@ class App:
         self.settings = dialog.result
         self.WATCH_FOLDER = self.settings.watch_folder
         self.SORTED_FOLDER = self.settings.sorted_folder
-        self.LOG_FILE = self.SORTED_FOLDER / 'paper_sorter_log.txt'
+        self.LOG_FILE = self._default_log_file()
         if hasattr(self, "redirector"):
             self._replace_log_file_handler()
         logging.info(f"Settings saved. To Sort: {self.WATCH_FOLDER}; Sorted: {self.SORTED_FOLDER}")
@@ -331,13 +334,24 @@ class App:
         if not self.API_KEY: logging.error("FATAL: GEMINI_API_KEY not set."); return
         self.worker_thread = threading.Thread(target=self.processing_loop, daemon=True); self.worker_thread.start()
         self.rename_worker_thread = threading.Thread(target=self.rename_processing_loop, daemon=True); self.rename_worker_thread.start()
-        self.start_watcher(); self.process_gui_queue(); self.process_existing_files()
+        if self.settings.is_complete():
+            self.start_watcher()
+            self.process_existing_files()
+        else:
+            logging.info("Folder settings are not configured yet. Choose Settings or add a paper to continue.")
+            self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+        self.process_gui_queue()
     def on_closing(self):
         logging.info("--- Shutting down... ---")
-        try: self.observer.stop(); self.observer.join(timeout=3)
-        except Exception: pass
+        if hasattr(self, "observer"):
+            try: self.observer.stop(); self.observer.join(timeout=3)
+            except Exception: pass
         self.root.destroy()
     def start_watcher(self):
+        if not self.settings.is_complete():
+            return
+        if hasattr(self, "observer") and self.observer.is_alive():
+            return
         event_handler = self.create_watchdog_handler(); self.observer = Observer()
         self.observer.schedule(event_handler, str(self.WATCH_FOLDER), recursive=False); self.observer.start()
         logging.info(f"Watching for new files in: {self.WATCH_FOLDER}"); self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
@@ -499,6 +513,8 @@ class App:
 
     # (The rename flow can also be updated to use the new dialog if desired)
     def rename_papers_flow(self):
+        if not self._ensure_settings():
+            return
         if self.rename_batch_total:
             CTkMessagebox(master=self.root, title="Rename In Progress", message="Please wait for the current rename batch to finish.")
             return
@@ -580,6 +596,8 @@ class App:
             self.rename_batch_total = 0
         
     def process_existing_files(self):
+        if not self.settings.is_complete():
+            return
         logging.info(f"Scanning for existing files in {self.WATCH_FOLDER}...")
         pdf_files = list(self.WATCH_FOLDER.glob('*.pdf'))
         if pdf_files:
@@ -616,9 +634,18 @@ class App:
                 except Exception as e: logging.error(f"Failed to copy '{source_path.name}': {e}")
         if added_count > 0: logging.info(f"User dropped {added_count} paper(s) to the ToSort folder.")
         
-    def open_watch_folder(self): webbrowser.open(self.WATCH_FOLDER)
-    def open_sorted_folder(self): webbrowser.open(self.SORTED_FOLDER)
+    def open_watch_folder(self):
+        if not self._ensure_settings():
+            return
+        webbrowser.open(self.WATCH_FOLDER)
+    def open_sorted_folder(self):
+        if not self._ensure_settings():
+            return
+        webbrowser.open(self.SORTED_FOLDER)
     def open_log_file(self):
+        if not self.LOG_FILE.exists():
+            logging.info("No log file exists yet.")
+            return
         # Open the unified log file in the default text editor
         import os
         os.startfile(self.LOG_FILE)
