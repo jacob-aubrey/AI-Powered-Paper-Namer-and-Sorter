@@ -57,7 +57,9 @@ Run Watch and Launch if you want a lightweight helper to watch the To Sort folde
 
 When a PDF is created, moved into, or modified in the To Sort folder, Watch and Launch opens AI Paper Sorter if it is not already open.
 
-If you want this to work after restarting or logging back into Windows, add Watch and Launch to Windows Startup or Task Scheduler.
+This is off by default. To enable it, open Settings and turn on "Start Watch and Launch at Windows login/unlock."
+
+When enabled, the app creates a Windows Scheduled Task for your user account. It starts Watch and Launch when you log in and when you unlock Windows.
 
 ---------------------------------------
 5. Troubleshooting

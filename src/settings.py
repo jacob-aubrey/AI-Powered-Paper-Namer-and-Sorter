@@ -9,6 +9,7 @@ class AppSettings:
     sorted_folder: Path | None = None
     api_key: str = ""
     naming_mode: str = "Automatic"
+    watch_and_launch_enabled: bool = False
 
     def is_complete(self) -> bool:
         return bool(self.watch_folder and self.sorted_folder)
@@ -39,6 +40,7 @@ class SettingsManager:
                     sorted_folder=Path(data["sorted_folder"]).expanduser() if data.get("sorted_folder") else None,
                     api_key=data.get("api_key", ""),
                     naming_mode=data.get("naming_mode", "Automatic"),
+                    watch_and_launch_enabled=bool(data.get("watch_and_launch_enabled", False)),
                 )
             except Exception:
                 continue
@@ -50,6 +52,7 @@ class SettingsManager:
             "sorted_folder": str(settings.sorted_folder),
             "api_key": settings.api_key,
             "naming_mode": settings.clean_naming_mode(),
+            "watch_and_launch_enabled": settings.watch_and_launch_enabled,
         }
         for path in (self.config_path, self.script_directory / "config.json"):
             try:

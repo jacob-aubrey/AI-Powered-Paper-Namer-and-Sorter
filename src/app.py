@@ -5,12 +5,15 @@ import time
 import shutil
 import logging
 import re
+import subprocess
+import tempfile
 from pathlib import Path
 import sys
 import threading
 import webbrowser
 from queue import Queue
 from tkinter import filedialog
+from xml.sax.saxutils import escape
 
 from tkinterdnd2 import DND_FILES, TkinterDnD
 import customtkinter as ctk
@@ -205,7 +208,7 @@ class SettingsDialog(ctk.CTkToplevel):
     def __init__(self, master, settings: AppSettings):
         super().__init__(master)
         self.title("Settings")
-        self.geometry("760x360")
+        self.geometry("760x410")
         self.transient(master)
         self.grab_set()
         self.result = None
@@ -221,6 +224,7 @@ class SettingsDialog(ctk.CTkToplevel):
         self.sorted_var = ctk.StringVar(value=str(settings.sorted_folder or ""))
         self.api_key_var = ctk.StringVar(value=settings.api_key or "")
         self.naming_mode_var = ctk.StringVar(value=settings.clean_naming_mode())
+        self.watch_launch_var = ctk.BooleanVar(value=settings.watch_and_launch_enabled)
 
         ctk.CTkLabel(frame, text="To Sort folder").grid(row=0, column=0, padx=10, pady=(14, 6), sticky="w")
         ctk.CTkEntry(frame, textvariable=self.watch_var).grid(row=0, column=1, padx=10, pady=(14, 6), sticky="ew")
@@ -247,6 +251,15 @@ class SettingsDialog(ctk.CTkToplevel):
         self.api_help_button.grid(row=3, column=2, padx=10, pady=6)
         add_tooltip(self.api_help_button, "Show concise setup instructions for Gemini AI naming.")
 
+        self.watch_launch_check = ctk.CTkCheckBox(
+            frame,
+            text="Start Watch and Launch at Windows login/unlock",
+            variable=self.watch_launch_var,
+            command=self._on_watch_launch_toggle,
+        )
+        self.watch_launch_check.grid(row=4, column=1, padx=10, pady=(10, 6), sticky="w")
+        add_tooltip(self.watch_launch_check, "Run the lightweight watcher in the background so PDFs added later can open the sorter app.")
+
         button_frame = ctk.CTkFrame(self, fg_color="transparent")
         button_frame.grid(row=1, column=0, padx=16, pady=(0, 16), sticky="ew")
         button_frame.grid_columnconfigure((0, 1), weight=1)
@@ -269,9 +282,18 @@ class SettingsDialog(ctk.CTkToplevel):
         if selected:
             self.sorted_var.set(selected)
 
+    def _on_watch_launch_toggle(self):
+        if self.watch_launch_var.get() and not self.watch_var.get().strip():
+            self._browse_watch()
+            if not self.watch_var.get().strip():
+                self.watch_launch_var.set(False)
+
     def _save(self):
         watch = self.watch_var.get().strip()
         sorted_folder = self.sorted_var.get().strip()
+        if self.watch_launch_var.get() and not watch:
+            self._browse_watch()
+            watch = self.watch_var.get().strip()
         if not watch or not sorted_folder:
             CTkMessagebox(master=self, title="Missing Folders", message="Choose both folders before saving.", icon="warning")
             return
@@ -280,6 +302,7 @@ class SettingsDialog(ctk.CTkToplevel):
             sorted_folder=Path(sorted_folder).expanduser(),
             api_key=self.api_key_var.get().strip(),
             naming_mode=self.naming_mode_var.get(),
+            watch_and_launch_enabled=self.watch_launch_var.get(),
         )
         self.destroy()
 
@@ -303,6 +326,8 @@ class SettingsDialog(ctk.CTkToplevel):
         )
 
 class App:
+    WATCH_LAUNCH_TASK_NAME = "AI Paper Sorter Watch and Launch"
+
     def _asset_path(self, *parts):
         if getattr(sys, 'frozen', False):
             return self.SCRIPT_DIRECTORY / "assets" / Path(*parts)
@@ -311,6 +336,118 @@ class App:
     def _toolbar_icon(self, filename):
         image = Image.open(self._asset_path("icons", filename))
         return ctk.CTkImage(light_image=image, dark_image=image, size=(22, 22))
+
+    def _watch_launcher_command(self):
+        candidates = [
+            self.SCRIPT_DIRECTORY.parent / "Watch and Launch" / "Watch and Launch.exe",
+            self.SCRIPT_DIRECTORY / "Watch and Launch.exe",
+            Path(r"C:\Paper Sorter\dist\Watch and Launch.exe"),
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                return str(candidate), "", str(candidate.parent)
+
+        pythonw = Path(sys.executable).with_name("pythonw.exe")
+        python_exe = pythonw if pythonw.exists() else Path(sys.executable)
+        script = self.SCRIPT_DIRECTORY / "watch_and_launch.py"
+        return str(python_exe), f'"{script}"', str(self.SCRIPT_DIRECTORY)
+
+    def _watch_launch_task_xml(self):
+        command, arguments, working_directory = self._watch_launcher_command()
+        arguments_xml = f"<Arguments>{escape(arguments)}</Arguments>" if arguments else ""
+        return f"""<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>Starts the AI Paper Sorter watcher at login and unlock.</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+    </LogonTrigger>
+    <SessionStateChangeTrigger>
+      <Enabled>true</Enabled>
+      <StateChange>SessionUnlock</StateChange>
+    </SessionStateChangeTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{escape(command)}</Command>
+      {arguments_xml}
+      <WorkingDirectory>{escape(working_directory)}</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>
+"""
+
+    def _run_hidden(self, command):
+        return subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            creationflags=0x08000000,
+            timeout=20,
+        )
+
+    def _install_watch_launch_task(self):
+        xml = self._watch_launch_task_xml()
+        with tempfile.NamedTemporaryFile("w", suffix=".xml", delete=False, encoding="utf-16") as task_file:
+            task_file.write(xml)
+            task_path = task_file.name
+        try:
+            result = self._run_hidden(["schtasks", "/Create", "/TN", self.WATCH_LAUNCH_TASK_NAME, "/XML", task_path, "/F"])
+            if result.returncode != 0:
+                raise RuntimeError((result.stderr or result.stdout or "Task Scheduler did not accept the task.").strip())
+            self._run_hidden(["schtasks", "/Run", "/TN", self.WATCH_LAUNCH_TASK_NAME])
+        finally:
+            try:
+                Path(task_path).unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    def _remove_watch_launch_task(self):
+        self._run_hidden(["schtasks", "/Delete", "/TN", self.WATCH_LAUNCH_TASK_NAME, "/F"])
+        self._stop_watch_launcher_process()
+
+    def _stop_watch_launcher_process(self):
+        powershell = (
+            "Get-CimInstance Win32_Process | "
+            "Where-Object { $_.Name -eq 'Watch and Launch.exe' -or $_.CommandLine -like '*watch_and_launch.py*' } | "
+            "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+        )
+        self._run_hidden(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", powershell])
+
+    def _sync_watch_launch_setting(self):
+        if self.settings.watch_and_launch_enabled:
+            self._install_watch_launch_task()
+            logging.info("Watch and Launch enabled for Windows login/unlock.")
+        else:
+            self._remove_watch_launch_task()
+            logging.info("Watch and Launch disabled.")
 
     def __init__(self, root):
         self.root = root
@@ -473,6 +610,20 @@ class App:
         if hasattr(self, "redirector"):
             self._replace_log_file_handler()
         logging.info(f"Settings saved. To Sort: {self.WATCH_FOLDER}; Sorted: {self.SORTED_FOLDER}")
+        try:
+            self._sync_watch_launch_setting()
+        except Exception as e:
+            self.settings.watch_and_launch_enabled = False
+            try:
+                self.settings_manager.save(self.settings)
+            except Exception:
+                pass
+            CTkMessagebox(
+                master=self.root,
+                title="Watch and Launch Error",
+                message=f"Settings were saved, but Watch and Launch could not be updated:\n{e}",
+                icon="warning",
+            )
         if hasattr(self, "observer"):
             try:
                 self.observer.stop()

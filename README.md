@@ -40,4 +40,6 @@ The app can read a Gemini key from Settings or from the `GEMINI_API_KEY` environ
 
 When a PDF is created, moved into, or modified in the To Sort folder, the helper waits until the file looks fully copied, then opens AI Paper Sorter if it is not already running.
 
-To run after a restart or login, the helper itself needs to be started by Windows, for example with a Startup shortcut or Task Scheduler entry.
+This feature is off by default. Turn it on in Settings with `Start Watch and Launch at Windows login/unlock`.
+
+When enabled, the app creates a per-user Windows Scheduled Task that starts the helper at login and when the workstation is unlocked.
