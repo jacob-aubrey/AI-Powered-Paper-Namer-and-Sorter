@@ -50,12 +50,14 @@ Windows PowerShell:
 ---------------------------------------
 4. Run the Program
 ---------------------------------------
-Double-click the AI Paper Sorter executable.
+Double-click Lit Sorter 1.0.exe.
 
 Optional:
-Run Watch and Launch if you want a lightweight helper to watch the To Sort folder while the main app is closed.
+Turn on Watch and Launch if you want a lightweight background mode to watch the To Sort folder while the main app window is closed.
 
-When a PDF is created, moved into, or modified in the To Sort folder, Watch and Launch opens AI Paper Sorter if it is not already open.
+This uses the same Lit Sorter 1.0.exe file. Windows starts it with --watch, which means it stays quiet in the background until a PDF appears.
+
+When a PDF is created, moved into, or modified in the To Sort folder, watcher mode opens Lit Sorter if it is not already open.
 
 This is off by default. To enable it, open Settings and turn on "Start Watch and Launch at Windows login/unlock."
 

@@ -8,11 +8,11 @@ AI naming is optional. If no Gemini API key is configured, the app can still use
 
 ## Source Files
 
-- `src/main.py` - small entry point that starts the app.
+- `src/main.py` - entry point that starts the GUI normally or watcher mode with `--watch`.
 - `src/app.py` - main GUI and sorting workflow.
 - `src/core_logic.py` - PDF extraction, Gemini parsing, filename validation, and path helpers.
 - `src/settings.py` - per-PC settings loading and saving.
-- `src/watch_and_launch.py` - optional low-power companion watcher that launches the sorter when a PDF appears in the To Sort folder.
+- `src/watch_and_launch.py` - low-power watcher mode used by the packaged app when launched with `--watch`.
 - `assets/` - app icons.
 
 ## Configuration
@@ -36,9 +36,13 @@ The app can read a Gemini key from Settings or from the `GEMINI_API_KEY` environ
 
 ## Optional Watch And Launch
 
-`Watch and Launch` is a separate lightweight helper. Leave it running if you want Windows to watch the configured To Sort folder while the main sorter app is closed.
+`Lit Sorter 1.0.exe` has two modes.
 
-When a PDF is created, moved into, or modified in the To Sort folder, the helper waits until the file looks fully copied, then opens AI Paper Sorter if it is not already running.
+Double-click it normally to open the app.
+
+Windows can also start the same executable with `--watch`. In that mode, it stays quiet in the background and watches the configured To Sort folder while the main app window is closed.
+
+When a PDF is created, moved into, or modified in the To Sort folder, watcher mode waits until the file looks fully copied, then opens the normal app window if it is not already running.
 
 This feature is off by default. Turn it on in Settings with `Start Watch and Launch at Windows login/unlock`.
 

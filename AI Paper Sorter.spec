@@ -22,7 +22,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=['PyQt5', 'PyQt6', 'PySide2', 'PySide6'],
     noarchive=False,
     optimize=0,
 )
@@ -31,9 +31,11 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
+    a.binaries,
+    a.datas,
     [],
-    exclude_binaries=True,
-    name='AI Paper Sorter',
+    exclude_binaries=False,
+    name='Lit Sorter 1.0',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -45,13 +47,4 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=['assets\\Icon.ico'],
-)
-coll = COLLECT(
-    exe,
-    a.binaries,
-    a.datas,
-    strip=False,
-    upx=True,
-    upx_exclude=[],
-    name='AI Paper Sorter',
 )

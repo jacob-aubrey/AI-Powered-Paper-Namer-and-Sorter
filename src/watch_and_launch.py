@@ -25,24 +25,17 @@ def _script_dir() -> Path:
 
 SCRIPT_DIR = _script_dir()
 
-# Candidate GUI exe paths (both one-dir and one-file layouts supported)
-GUI_EXE_CANDIDATES = [
-    SCRIPT_DIR.parent / "AI Paper Sorter" / "AI Paper Sorter.exe",
-    SCRIPT_DIR / "AI Paper Sorter.exe",  # one-file build in same dist
-    Path(r"C:\Paper Sorter\dist\AI Paper Sorter.exe"),
-]
-GUI_PY = SCRIPT_DIR / "main.py"  # fallback (source)
-GUI_PROCESS_NAMES = {"ai paper sorter.exe"}
+GUI_PY = SCRIPT_DIR / "main.py"  # source fallback
+GUI_WINDOW_TITLE = "AI Paper Sorter"
 launched_gui_process: subprocess.Popen | None = None
 
 # ----------------------------
 # Helpers
 # ----------------------------
-def find_gui_exe() -> Path | None:
-    for cand in GUI_EXE_CANDIDATES:
-        if cand.exists():
-            return cand
-    return None
+def gui_launch_command() -> tuple[list[str], Path]:
+    if getattr(sys, "frozen", False):
+        return [str(Path(sys.executable))], Path(sys.executable).parent
+    return [sys.executable, str(GUI_PY)], SCRIPT_DIR
 
 def is_gui_running() -> bool:
     global launched_gui_process
@@ -50,10 +43,16 @@ def is_gui_running() -> bool:
         return True
 
     try:
+        powershell = (
+            "Get-Process | "
+            f"Where-Object {{ $_.MainWindowTitle -eq '{GUI_WINDOW_TITLE}' }} | "
+            "Select-Object -First 1"
+        )
         out = subprocess.check_output(
-            ["tasklist"], creationflags=0x08000000
-        ).decode(errors="ignore").lower()
-        return any(process_name in out for process_name in GUI_PROCESS_NAMES)
+            ["powershell", "-NoProfile", "-Command", powershell],
+            creationflags=0x08000000,
+        ).decode(errors="ignore")
+        return bool(out.strip())
     except Exception:
         return False
 
@@ -98,19 +97,12 @@ def load_folder_settings():
 def launch_gui():
     global launched_gui_process
     try:
-        exe = find_gui_exe()
-        if exe is not None:
-            launched_gui_process = subprocess.Popen(
-                [str(exe)],
-                cwd=str(exe.parent),
-                creationflags=0x08000000,  # no console window
-            )
-        else:
-            launched_gui_process = subprocess.Popen(
-                [sys.executable, str(GUI_PY)],
-                cwd=str(SCRIPT_DIR),
-                creationflags=0x08000000,
-            )
+        command, working_directory = gui_launch_command()
+        launched_gui_process = subprocess.Popen(
+            command,
+            cwd=str(working_directory),
+            creationflags=0x08000000,
+        )
     except Exception as e:
         print("Launch error:", e)
 

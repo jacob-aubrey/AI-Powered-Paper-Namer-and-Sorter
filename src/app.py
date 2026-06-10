@@ -330,6 +330,8 @@ class App:
     WATCH_LAUNCH_STARTUP_FILE = "AI Paper Sorter Watch and Launch.cmd"
 
     def _asset_path(self, *parts):
+        if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+            return Path(sys._MEIPASS) / "assets" / Path(*parts)
         if getattr(sys, 'frozen', False):
             return self.SCRIPT_DIRECTORY / "assets" / Path(*parts)
         return self.SCRIPT_DIRECTORY.parent / "assets" / Path(*parts)
@@ -339,24 +341,24 @@ class App:
         return ctk.CTkImage(light_image=image, dark_image=image, size=(22, 22))
 
     def _watch_launcher_command(self):
-        candidates = [
-            self.SCRIPT_DIRECTORY.parent / "Watch and Launch" / "Watch and Launch.exe",
-            self.SCRIPT_DIRECTORY / "Watch and Launch.exe",
-            Path(r"C:\Paper Sorter\dist\Watch and Launch.exe"),
-        ]
-        for candidate in candidates:
-            if candidate.exists():
-                return str(candidate), "", str(candidate.parent)
+        if getattr(sys, "frozen", False):
+            exe_path = Path(sys.executable)
+            return str(exe_path), "--watch", str(exe_path.parent)
 
         pythonw = Path(sys.executable).with_name("pythonw.exe")
         python_exe = pythonw if pythonw.exists() else Path(sys.executable)
-        script = self.SCRIPT_DIRECTORY / "watch_and_launch.py"
-        return str(python_exe), f'"{script}"', str(self.SCRIPT_DIRECTORY)
+        script = self.SCRIPT_DIRECTORY / "main.py"
+        return str(python_exe), f'"{script}" --watch', str(self.SCRIPT_DIRECTORY)
 
     def _watch_launcher_popen_args(self):
         command, arguments, _working_directory = self._watch_launcher_command()
+        if arguments == "--watch":
+            return [command, "--watch"]
+        if arguments.endswith(" --watch") and arguments.startswith('"'):
+            script_path = arguments[1:arguments.rfind('"')]
+            return [command, script_path, "--watch"]
         if arguments:
-            return [command, arguments.strip('"')]
+            return [command, *arguments.split()]
         return [command]
 
     def _current_windows_user(self):
@@ -497,7 +499,7 @@ class App:
     def _stop_watch_launcher_process(self):
         powershell = (
             "Get-CimInstance Win32_Process | "
-            "Where-Object { $_.Name -eq 'Watch and Launch.exe' -or $_.CommandLine -like '*watch_and_launch.py*' } | "
+            "Where-Object { $_.CommandLine -like '*--watch*' -and ($_.Name -eq 'Lit Sorter 1.0.exe' -or $_.Name -like 'python*.exe') } | "
             "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
         )
         self._run_hidden(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", powershell])
