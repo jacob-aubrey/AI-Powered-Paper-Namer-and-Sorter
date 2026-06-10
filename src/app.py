@@ -345,6 +345,7 @@ class App:
         self.toolbar_frame.grid_columnconfigure(0, weight=1)
         self.toolbar_icons = {
             "name": self._toolbar_icon("pen.png"),
+            "refresh": self._toolbar_icon("refresh.png"),
             "sorted": self._toolbar_icon("folder.png"),
             "log": self._toolbar_icon("clipboard_pen.png"),
             "settings": self._toolbar_icon("gear.png"),
@@ -361,6 +362,16 @@ class App:
         )
         self.btn_name_papers.pack(side="left", padx=4)
         add_tooltip(self.btn_name_papers, "Use Gemini to rename PDFs in place without moving them into a sorted folder.")
+        self.btn_refresh = ctk.CTkButton(
+            self.toolbar_buttons,
+            text="Refresh",
+            image=self.toolbar_icons["refresh"],
+            compound="left",
+            width=104,
+            command=self.refresh_to_sort_folder,
+        )
+        self.btn_refresh.pack(side="left", padx=4)
+        add_tooltip(self.btn_refresh, "Rescan the To Sort folder and queue any PDFs that are waiting there.")
         self.btn_view_sorted = ctk.CTkButton(
             self.toolbar_buttons,
             text="Sorted",
@@ -469,7 +480,7 @@ class App:
             except Exception:
                 pass
             self.start_watcher()
-            self.process_existing_files()
+        self.process_existing_files()
         return True
 
     def _replace_log_file_handler(self):
@@ -786,6 +797,13 @@ class App:
                 self._queue_sort_file(pdf_path)
         else:
             logging.info("No PDF files found; ToSort folder is empty.")
+
+    def refresh_to_sort_folder(self):
+        settings_were_ready = self.settings and self.settings.is_complete()
+        if not self._ensure_settings():
+            return
+        if settings_were_ready:
+            self.process_existing_files()
 
     def select_and_add_papers(self):
         if not self._ensure_settings():
