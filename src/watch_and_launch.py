@@ -9,6 +9,7 @@ import sys
 import os
 import time
 import subprocess
+import ctypes
 from pathlib import Path
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
@@ -28,6 +29,7 @@ SCRIPT_DIR = _script_dir()
 GUI_PY = SCRIPT_DIR / "main.py"  # source fallback
 GUI_WINDOW_TITLE = "AI Paper Sorter"
 launched_gui_process: subprocess.Popen | None = None
+watcher_mutex_handle = None
 
 # ----------------------------
 # Helpers
@@ -36,6 +38,14 @@ def gui_launch_command() -> tuple[list[str], Path]:
     if getattr(sys, "frozen", False):
         return [str(Path(sys.executable))], Path(sys.executable).parent
     return [sys.executable, str(GUI_PY)], SCRIPT_DIR
+
+def acquire_single_watcher_lock() -> bool:
+    global watcher_mutex_handle
+    if os.name != "nt":
+        return True
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    watcher_mutex_handle = kernel32.CreateMutexW(None, False, "Local\\LitSorterWatchMode")
+    return ctypes.get_last_error() != 183
 
 def is_gui_running() -> bool:
     global launched_gui_process
@@ -150,6 +160,8 @@ class LaunchOnPdfEvent(FileSystemEventHandler):
 # Main loop
 # ----------------------------
 def main():
+    if not acquire_single_watcher_lock():
+        return
     watch_folder, _sorted_folder = load_folder_settings()
     observer = Observer()
     handler = LaunchOnPdfEvent()
