@@ -12,7 +12,7 @@ AI naming is optional. If no Gemini API key is configured, the app can still use
 - `src/app.py` - main GUI and sorting workflow.
 - `src/core_logic.py` - PDF extraction, Gemini parsing, filename validation, and path helpers.
 - `src/settings.py` - per-PC settings loading and saving.
-- `src/watch_and_launch.py` - optional companion watcher/launcher.
+- `src/watch_and_launch.py` - optional low-power companion watcher that launches the sorter when a PDF appears in the To Sort folder.
 - `assets/` - app icons.
 
 ## Configuration
@@ -33,3 +33,11 @@ Naming modes:
 - `Basic` - never uses Gemini.
 
 The app can read a Gemini key from Settings or from the `GEMINI_API_KEY` environment variable.
+
+## Optional Watch And Launch
+
+`Watch and Launch` is a separate lightweight helper. Leave it running if you want Windows to watch the configured To Sort folder while the main sorter app is closed.
+
+When a PDF is created, moved into, or modified in the To Sort folder, the helper waits until the file looks fully copied, then opens AI Paper Sorter if it is not already running.
+
+To run after a restart or login, the helper itself needs to be started by Windows, for example with a Startup shortcut or Task Scheduler entry.
