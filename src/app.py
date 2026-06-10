@@ -327,6 +327,7 @@ class SettingsDialog(ctk.CTkToplevel):
 
 class App:
     WATCH_LAUNCH_TASK_NAME = "AI Paper Sorter Watch and Launch"
+    WATCH_LAUNCH_STARTUP_FILE = "AI Paper Sorter Watch and Launch.cmd"
 
     def _asset_path(self, *parts):
         if getattr(sys, 'frozen', False):
@@ -352,9 +353,35 @@ class App:
         script = self.SCRIPT_DIRECTORY / "watch_and_launch.py"
         return str(python_exe), f'"{script}"', str(self.SCRIPT_DIRECTORY)
 
+    def _watch_launcher_popen_args(self):
+        command, arguments, _working_directory = self._watch_launcher_command()
+        if arguments:
+            return [command, arguments.strip('"')]
+        return [command]
+
+    def _current_windows_user(self):
+        domain = os.environ.get("USERDOMAIN", "").strip()
+        username = os.environ.get("USERNAME", "").strip()
+        if domain and username:
+            return f"{domain}\\{username}"
+        return os.getlogin()
+
+    def _startup_folder(self):
+        appdata = os.environ.get("APPDATA")
+        if not appdata:
+            return None
+        return Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
+
+    def _startup_file_path(self):
+        startup_folder = self._startup_folder()
+        if not startup_folder:
+            return None
+        return startup_folder / self.WATCH_LAUNCH_STARTUP_FILE
+
     def _watch_launch_task_xml(self):
         command, arguments, working_directory = self._watch_launcher_command()
         arguments_xml = f"<Arguments>{escape(arguments)}</Arguments>" if arguments else ""
+        user_id = self._current_windows_user()
         return f"""<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
@@ -371,6 +398,7 @@ class App:
   </Triggers>
   <Principals>
     <Principal id="Author">
+      <UserId>{escape(user_id)}</UserId>
       <LogonType>InteractiveToken</LogonType>
       <RunLevel>LeastPrivilege</RunLevel>
     </Principal>
@@ -429,8 +457,41 @@ class App:
             except Exception:
                 pass
 
+    def _install_watch_launch_startup_file(self):
+        startup_file = self._startup_file_path()
+        if not startup_file:
+            raise RuntimeError("Could not find the Windows Startup folder.")
+        command, arguments, working_directory = self._watch_launcher_command()
+        startup_file.parent.mkdir(parents=True, exist_ok=True)
+        startup_file.write_text(
+            "\n".join(
+                [
+                    "@echo off",
+                    f'cd /d "{working_directory}"',
+                    f'start "" "{command}" {arguments}'.rstrip(),
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        self._start_watch_launcher_now()
+
+    def _remove_watch_launch_startup_file(self):
+        startup_file = self._startup_file_path()
+        if startup_file:
+            startup_file.unlink(missing_ok=True)
+
+    def _start_watch_launcher_now(self):
+        _command, _arguments, working_directory = self._watch_launcher_command()
+        subprocess.Popen(
+            self._watch_launcher_popen_args(),
+            cwd=working_directory,
+            creationflags=0x08000000,
+        )
+
     def _remove_watch_launch_task(self):
         self._run_hidden(["schtasks", "/Delete", "/TN", self.WATCH_LAUNCH_TASK_NAME, "/F"])
+        self._remove_watch_launch_startup_file()
         self._stop_watch_launcher_process()
 
     def _stop_watch_launcher_process(self):
@@ -443,8 +504,13 @@ class App:
 
     def _sync_watch_launch_setting(self):
         if self.settings.watch_and_launch_enabled:
-            self._install_watch_launch_task()
-            logging.info("Watch and Launch enabled for Windows login/unlock.")
+            try:
+                self._remove_watch_launch_startup_file()
+                self._install_watch_launch_task()
+                logging.info("Watch and Launch enabled for Windows login/unlock.")
+            except Exception as task_error:
+                self._install_watch_launch_startup_file()
+                logging.warning(f"Could not create the login/unlock scheduled task. Enabled login startup fallback instead: {task_error}")
         else:
             self._remove_watch_launch_task()
             logging.info("Watch and Launch disabled.")

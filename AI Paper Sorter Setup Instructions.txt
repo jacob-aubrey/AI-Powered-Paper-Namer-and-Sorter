@@ -61,6 +61,8 @@ This is off by default. To enable it, open Settings and turn on "Start Watch and
 
 When enabled, the app creates a Windows Scheduled Task for your user account. It starts Watch and Launch when you log in and when you unlock Windows.
 
+If Windows blocks the Scheduled Task, the app falls back to the Windows Startup folder so Watch and Launch still starts when you log in.
+
 ---------------------------------------
 5. Troubleshooting
 ---------------------------------------

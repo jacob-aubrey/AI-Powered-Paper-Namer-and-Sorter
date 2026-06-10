@@ -43,3 +43,5 @@ When a PDF is created, moved into, or modified in the To Sort folder, the helper
 This feature is off by default. Turn it on in Settings with `Start Watch and Launch at Windows login/unlock`.
 
 When enabled, the app creates a per-user Windows Scheduled Task that starts the helper at login and when the workstation is unlocked.
+
+If Windows blocks Scheduled Task creation, the app falls back to a Startup folder command so the helper still starts at login.
