@@ -524,15 +524,34 @@ class App:
     def create_watchdog_handler(self):
         class MyHandler(FileSystemEventHandler):
             def __init__(self, enqueue): self.enqueue = enqueue
+
+            def _maybe_enqueue(self, path):
+                pdf_path = Path(path)
+                if pdf_path.suffix.lower() == ".pdf":
+                    self.enqueue(pdf_path)
+
             def on_created(self, event):
-                if not event.is_directory and event.src_path.lower().endswith('.pdf'):
-                    time.sleep(2); self.enqueue(Path(event.src_path))
+                if not event.is_directory:
+                    self._maybe_enqueue(event.src_path)
+
+            def on_moved(self, event):
+                if not event.is_directory:
+                    self._maybe_enqueue(event.dest_path)
+
+            def on_modified(self, event):
+                if not event.is_directory:
+                    self._maybe_enqueue(event.src_path)
+
         return MyHandler(self._queue_sort_file)
-    def _queue_sort_file(self, pdf_path: Path):
+
+    def _sort_queue_key(self, pdf_path: Path):
         try:
-            key = pdf_path.resolve()
+            return str(pdf_path.resolve()).lower()
         except Exception:
-            key = pdf_path
+            return str(pdf_path).lower()
+
+    def _queue_sort_file(self, pdf_path: Path):
+        key = self._sort_queue_key(pdf_path)
         with self.queue_lock:
             if key in self.queued_sort_paths:
                 logging.info(f"Already queued for sorting: {pdf_path.name}")
@@ -540,12 +559,47 @@ class App:
             self.queued_sort_paths.add(key)
         self.file_queue.put(pdf_path)
     def _clear_queued_sort_file(self, pdf_path: Path):
-        try:
-            key = pdf_path.resolve()
-        except Exception:
-            key = pdf_path
+        key = self._sort_queue_key(pdf_path)
         with self.queue_lock:
             self.queued_sort_paths.discard(key)
+
+    def _wait_for_file_ready(self, pdf_path: Path, timeout_seconds=60, stable_seconds=2):
+        deadline = time.monotonic() + timeout_seconds
+        last_signature = None
+        stable_since = None
+        last_error = None
+
+        while time.monotonic() < deadline:
+            try:
+                stat = pdf_path.stat()
+                if stat.st_size == 0:
+                    stable_since = None
+                    last_signature = None
+                else:
+                    with open(pdf_path, "rb"):
+                        pass
+                    signature = (stat.st_size, stat.st_mtime_ns)
+                    if signature == last_signature:
+                        stable_since = stable_since or time.monotonic()
+                        if time.monotonic() - stable_since >= stable_seconds:
+                            return True
+                    else:
+                        last_signature = signature
+                        stable_since = time.monotonic()
+            except FileNotFoundError:
+                last_error = "file was not found"
+                stable_since = None
+                last_signature = None
+            except OSError as e:
+                last_error = str(e)
+                stable_since = None
+                last_signature = None
+            time.sleep(0.5)
+
+        detail = f" Last error: {last_error}" if last_error else ""
+        logging.warning(f"Timed out waiting for file to finish copying: {pdf_path.name}.{detail}")
+        return False
+
     def processing_loop(self):
         while True:
             pdf_path = self.file_queue.get()
@@ -553,6 +607,8 @@ class App:
             try:
                 if not pdf_path.exists():
                     logging.warning(f"File disappeared before sorting: {pdf_path.name}")
+                    continue
+                if not self._wait_for_file_ready(pdf_path):
                     continue
                 logging.info(f"--- Processing (sort): {pdf_path.name} ---")
                 details = self._get_details_for_pdf(pdf_path)
