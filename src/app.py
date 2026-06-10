@@ -15,6 +15,7 @@ from tkinter import filedialog
 from tkinterdnd2 import DND_FILES, TkinterDnD
 import customtkinter as ctk
 from CTkMessagebox import CTkMessagebox
+from PIL import Image
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
@@ -302,6 +303,15 @@ class SettingsDialog(ctk.CTkToplevel):
         )
 
 class App:
+    def _asset_path(self, *parts):
+        if getattr(sys, 'frozen', False):
+            return self.SCRIPT_DIRECTORY / "assets" / Path(*parts)
+        return self.SCRIPT_DIRECTORY.parent / "assets" / Path(*parts)
+
+    def _toolbar_icon(self, filename):
+        image = Image.open(self._asset_path("icons", filename))
+        return ctk.CTkImage(light_image=image, dark_image=image, size=(22, 22))
+
     def __init__(self, root):
         self.root = root
         self.root.title("AI Paper Sorter"); self.root.geometry("900x640")
@@ -333,20 +343,52 @@ class App:
         self.toolbar_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
         self.toolbar_frame.grid(row=0, column=0, padx=10, pady=(10, 0), sticky="ew")
         self.toolbar_frame.grid_columnconfigure(0, weight=1)
-        self.title_label = ctk.CTkLabel(self.toolbar_frame, text="AI Paper Sorter", font=ctk.CTkFont(size=16, weight="bold"))
-        self.title_label.grid(row=0, column=0, padx=(4, 12), pady=4, sticky="w")
+        self.toolbar_icons = {
+            "name": self._toolbar_icon("pen.png"),
+            "sorted": self._toolbar_icon("folder.png"),
+            "log": self._toolbar_icon("clipboard_pen.png"),
+            "settings": self._toolbar_icon("gear.png"),
+        }
         self.toolbar_buttons = ctk.CTkFrame(self.toolbar_frame, fg_color="transparent")
-        self.toolbar_buttons.grid(row=0, column=1, pady=4, sticky="e")
-        self.btn_name_papers = ctk.CTkButton(self.toolbar_buttons, text="✎ Name Papers", width=130, command=self.rename_papers_flow)
+        self.toolbar_buttons.grid(row=0, column=0, pady=4, sticky="e")
+        self.btn_name_papers = ctk.CTkButton(
+            self.toolbar_buttons,
+            text="Name Papers",
+            image=self.toolbar_icons["name"],
+            compound="left",
+            width=130,
+            command=self.rename_papers_flow,
+        )
         self.btn_name_papers.pack(side="left", padx=4)
         add_tooltip(self.btn_name_papers, "Use Gemini to rename PDFs in place without moving them into a sorted folder.")
-        self.btn_view_sorted = ctk.CTkButton(self.toolbar_buttons, text="📁 Sorted", width=96, command=self.open_sorted_folder)
+        self.btn_view_sorted = ctk.CTkButton(
+            self.toolbar_buttons,
+            text="Sorted",
+            image=self.toolbar_icons["sorted"],
+            compound="left",
+            width=96,
+            command=self.open_sorted_folder,
+        )
         self.btn_view_sorted.pack(side="left", padx=4)
         add_tooltip(self.btn_view_sorted, "Open the configured sorted-paper root folder in Windows Explorer.")
-        self.btn_view_log = ctk.CTkButton(self.toolbar_buttons, text="📋✎ Log", width=96, command=self.open_log_file)
+        self.btn_view_log = ctk.CTkButton(
+            self.toolbar_buttons,
+            text="Log",
+            image=self.toolbar_icons["log"],
+            compound="left",
+            width=96,
+            command=self.open_log_file,
+        )
         self.btn_view_log.pack(side="left", padx=4)
         add_tooltip(self.btn_view_log, "Open the text log that records app actions and moved papers.")
-        self.settings_button = ctk.CTkButton(self.toolbar_buttons, text="⚙ Settings", width=112, command=self.open_settings)
+        self.settings_button = ctk.CTkButton(
+            self.toolbar_buttons,
+            text="Settings",
+            image=self.toolbar_icons["settings"],
+            compound="left",
+            width=112,
+            command=self.open_settings,
+        )
         self.settings_button.pack(side="left", padx=(4, 0))
         add_tooltip(self.settings_button, "Set the To Sort folder and sorted-paper library root for this PC.")
 
