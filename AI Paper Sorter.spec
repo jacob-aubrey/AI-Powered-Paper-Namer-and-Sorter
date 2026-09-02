@@ -1,15 +1,17 @@
 # -*- mode: python ; coding: utf-8 -*-
-from PyInstaller.utils.hooks import collect_submodules
 from PyInstaller.utils.hooks import collect_all
 
 datas = []
 binaries = []
 hiddenimports = ['CTkMessagebox']
 datas += [('assets', 'assets')]
-hiddenimports += collect_submodules('google.generativeai')
 tmp_ret = collect_all('customtkinter')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('tkinterdnd2')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+tmp_ret = collect_all('docx')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+tmp_ret = collect_all('google.genai')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 
@@ -35,7 +37,7 @@ exe = EXE(
     a.datas,
     [],
     exclude_binaries=False,
-    name='Lit Sorter 1.0',
+    name='AI Paper Sorter',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -45,6 +47,7 @@ exe = EXE(
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
+    version='version_info.txt',
     entitlements_file=None,
     icon=['assets\\Icon.ico'],
 )

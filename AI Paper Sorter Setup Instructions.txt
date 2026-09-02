@@ -1,81 +1,48 @@
-============================
-AI Paper Sorter - Setup Guide
-============================
+AI Paper Sorter — Quick Setup
+==============================
 
-This program uses Google's Gemini AI model to read and organize research papers.
+For the full guide, troubleshooting, privacy information, and developer instructions,
+open README.md. This short file is only a quick first-run checklist.
 
-To work correctly, you need:
-1) Folder settings chosen inside the app
-2) A Gemini API key only if you want AI naming
+1. Extract the complete release ZIP before opening the app.
+   If the release includes an _internal folder, keep it next to the executable.
 
----------------------------------------
-1. Choose Folders in Settings
----------------------------------------
-When you first sort a paper, the app will ask you to choose:
+2. Open AI Paper Sorter and click Settings.
+   Choose two separate folders:
+   - To Sort folder: incoming PDF and Word (.docx) documents.
+   - Sorted papers root: the library that will receive approved documents.
 
-- To Sort folder: where new PDFs are copied/watched.
-- Sorted papers root: the main folder where organized papers are saved.
+3. Choose a naming mode.
+   - Automatic: AI when a Gemini key is available; Basic otherwise.
+   - AI: prefer Gemini, with Basic fallback on failure.
+   - Basic: local extraction only; no Gemini key is needed.
 
-You can change these later with the Settings button in the top toolbar.
-The app saves these settings on each PC.
+   Then choose a Filename style. Smart (recommended) is safest for mixed
+   research material. Citation presets and a validated Custom template are
+   available when you want a consistent library convention.
 
----------------------------------------
-2. Choose a Naming Mode
----------------------------------------
-The Settings window has three naming modes:
+4. Optional Gemini setup.
+   Click Settings > Get Key, create your own key in Google AI Studio, paste it,
+   choose Automatic or AI, then click Save. Never share your key.
 
-- Automatic: use AI when a Gemini key exists, otherwise use Basic naming.
-- AI: prefer Gemini naming; falls back to Basic if AI is unavailable.
-- Basic: use PDF metadata, first-page text, and the original filename.
+   Word-document AI analysis is off by default. Turn on its separate Settings
+   checkbox only if you want extracted .docx text sent to Gemini.
 
-Basic naming does not require an API key.
+5. Sort a document.
+   Drag a PDF or .docx file onto the app, review the proposed name, select a
+   destination folder, and confirm. You can edit every proposed filename.
 
----------------------------------------
-3. Optional: Set Up AI Naming
----------------------------------------
-AI naming uses Google's Gemini API.
+6. Optional background watching.
+   Settings > Enable Watch & Launch at Windows login/unlock starts a lightweight
+   helper while the main app is closed. It is off by default. The To Sort folder
+   can always be changed in Settings.
 
-1) Open Settings.
-2) Click "Get Key".
-3) Create a Gemini API key in Google AI Studio.
-4) Paste the key into the Gemini API key field.
-5) Set Naming mode to Automatic or AI.
-
-Advanced users can also set the GEMINI_API_KEY environment variable.
-
-Windows PowerShell:
-
-   setx GEMINI_API_KEY "YOUR_KEY"
-
----------------------------------------
-4. Run the Program
----------------------------------------
-Double-click Lit Sorter 1.0.exe.
-
-Optional:
-Turn on Watch and Launch if you want a lightweight background mode to watch the To Sort folder while the main app window is closed.
-
-This uses the same Lit Sorter 1.0.exe file. Windows starts it with --watch, which means it stays quiet in the background until a PDF appears.
-
-When a PDF is created, moved into, or modified in the To Sort folder, watcher mode opens Lit Sorter if it is not already open.
-
-This is off by default. To enable it, open Settings and turn on "Start Watch and Launch at Windows login/unlock."
-
-When enabled, the app creates a Windows Scheduled Task for your user account. It starts Watch and Launch when you log in and when you unlock Windows.
-
-If Windows blocks the Scheduled Task, the app falls back to the Windows Startup folder so Watch and Launch still starts when you log in.
-
----------------------------------------
-5. Troubleshooting
----------------------------------------
-- If AI naming is not set up
-  Use Basic naming, or add a Gemini key in Settings.
-
-- If the app asks for folders
-  Choose both folders in Settings and click Save.
-
-- If the program says "FATAL: GEMINI_API_KEY not set."
-  This should no longer block Basic naming. Open Settings to add a key if you want AI naming.
-
-- If a PDF is moved successfully
-  The bottom log panel will show View Location and View Paper links.
+Important limitations
+---------------------
+- Legacy .doc files must be saved as .docx first.
+- Image-only/scanned PDFs need OCR for useful metadata.
+- Review suggestions for reports, theses, letters, and other non-journal items.
+- The app never overwrites an existing destination file; it adds -1, -2, etc.
+- There is no automatic undo. Check the Log for moved-file locations.
+- The on-screen log is read-only. Clear Display clears only the window, never
+  the saved paper_sorter_log.txt file.

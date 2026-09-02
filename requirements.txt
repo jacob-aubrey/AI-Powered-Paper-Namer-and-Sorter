@@ -1,0 +1,13 @@
+# Runtime dependencies for AI Paper Sorter on Windows.
+# Install with: python -m pip install -r requirements.txt
+customtkinter>=5.2,<6
+CTkMessagebox>=2.7,<3
+Pillow>=10,<13
+tkinterdnd2>=0.3,<1
+watchdog>=4,<7
+pypdf>=5,<7
+python-docx>=1.1,<2
+google-genai>=2.21,<3
+
+# Packaging (only needed when creating the Windows distribution).
+pyinstaller>=6.10,<7

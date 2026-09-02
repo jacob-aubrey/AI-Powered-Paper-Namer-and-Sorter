@@ -1,7 +1,10 @@
 {
-  "watch_folder": "C:\\Paper Sorter\\ToSort",
-  "sorted_folder": "C:\\Paper Sorter\\Sorted",
+  "watch_folder": "",
+  "sorted_folder": "",
   "api_key": "",
   "naming_mode": "Automatic",
-  "watch_and_launch_enabled": false
+  "filename_format": "smart",
+  "custom_filename_template": "{author_last_et_al}_{journal_abbreviation}_{year}",
+  "watch_and_launch_enabled": false,
+  "allow_cloud_ai_for_word_documents": false
 }

@@ -1,7 +1,7 @@
 """
 watch_and_launch.py
 Continuously watches the configured To Sort folder.
-Whenever a PDF is created, moved in, or modified, it launches the AI Paper Sorter GUI
+Whenever a supported document is created, moved in, or modified, it launches the AI Paper Sorter GUI
 (if it is not already running).
 """
 
@@ -10,11 +10,20 @@ import os
 import time
 import subprocess
 import ctypes
+import logging
 from pathlib import Path
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
+from document_types import is_processable_document
 from settings import SettingsManager
+
+
+# The background helper is packaged as a windowed executable.  Do not fall back
+# to stderr if it has no console attached.
+LOGGER = logging.getLogger(__name__)
+LOGGER.addHandler(logging.NullHandler())
+LOGGER.propagate = False
 
 # ----------------------------
 # Environment & paths
@@ -98,6 +107,8 @@ def load_folder_settings():
     settings = SettingsManager(SCRIPT_DIR).load()
     if not settings.is_complete():
         raise FileNotFoundError("Folder settings are missing. Open AI Paper Sorter and choose folders in Settings first.")
+    if not settings.watch_and_launch_enabled:
+        raise FileNotFoundError("Watch and Launch is disabled in Settings.")
     watch_folder = settings.watch_folder.expanduser().resolve()
     sorted_folder = settings.sorted_folder.expanduser().resolve()
     watch_folder.mkdir(parents=True, exist_ok=True)
@@ -114,19 +125,20 @@ def launch_gui():
             creationflags=0x08000000,
         )
     except Exception as e:
-        print("Launch error:", e)
+        # A PyInstaller windowed executable does not necessarily have stdout.
+        LOGGER.error("Launch error: %s", e)
 
 # ----------------------------
 # Watchdog handler
 # ----------------------------
-class LaunchOnPdfEvent(FileSystemEventHandler):
+class LaunchOnDocumentEvent(FileSystemEventHandler):
     def __init__(self):
         super().__init__()
         self._last_launch_ts = 0.0
         self._DEBOUNCE_S = 5.0
 
-    def _handle_pdf(self, path: Path):
-        if path.suffix.lower() != ".pdf":
+    def _handle_document(self, path: Path):
+        if not is_processable_document(path):
             return
         if wait_until_stable(path):
             self._maybe_launch_gui()
@@ -141,20 +153,20 @@ class LaunchOnPdfEvent(FileSystemEventHandler):
 
     def on_created(self, event):
         p = Path(getattr(event, "src_path", ""))
-        if event.is_directory or p.suffix.lower() != ".pdf":
+        if event.is_directory or not is_processable_document(p):
             return
-        self._handle_pdf(p)
+        self._handle_document(p)
 
     def on_moved(self, event):
         dest = Path(getattr(event, "dest_path", ""))
-        if dest and dest.suffix.lower() == ".pdf":
-            self._handle_pdf(dest)
+        if dest and is_processable_document(dest):
+            self._handle_document(dest)
 
     def on_modified(self, event):
         p = Path(getattr(event, "src_path", ""))
-        if event.is_directory or p.suffix.lower() != ".pdf":
+        if event.is_directory or not is_processable_document(p):
             return
-        self._handle_pdf(p)
+        self._handle_document(p)
 
 # ----------------------------
 # Main loop
@@ -162,12 +174,17 @@ class LaunchOnPdfEvent(FileSystemEventHandler):
 def main():
     if not acquire_single_watcher_lock():
         return
-    watch_folder, _sorted_folder = load_folder_settings()
+    try:
+        watch_folder, _sorted_folder = load_folder_settings()
+    except (FileNotFoundError, OSError) as exc:
+        # The packaged application is windowed, so sys.stdout may be None here.
+        LOGGER.info("Watch and Launch did not start: %s", exc)
+        return
     observer = Observer()
-    handler = LaunchOnPdfEvent()
+    handler = LaunchOnDocumentEvent()
     observer.schedule(handler, str(watch_folder), recursive=False)
     observer.start()
-    print(f"Watching {watch_folder} for new PDFs...")
+    LOGGER.info("Watching %s for supported documents...", watch_folder)
     try:
         while True:
             time.sleep(1)  # keep running forever

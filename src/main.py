@@ -2,9 +2,6 @@ import sys
 import os
 import ctypes
 
-from app import App, DnDCTk
-from watch_and_launch import main as watch_main
-
 gui_mutex_handle = None
 
 
@@ -19,11 +16,14 @@ def acquire_single_gui_lock() -> bool:
 
 def main():
     if "--watch" in sys.argv:
+        from watch_and_launch import main as watch_main
         watch_main()
         return
 
     if not acquire_single_gui_lock():
         return
+
+    from app import App, DnDCTk
 
     root = DnDCTk()
     App(root)

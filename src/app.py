@@ -11,7 +11,7 @@ from pathlib import Path
 import sys
 import threading
 import webbrowser
-from queue import Queue
+from queue import Empty, Queue
 from tkinter import filedialog
 from xml.sax.saxutils import escape
 
@@ -23,14 +23,32 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
 from core_logic import (
-    cleanup_author_string,
-    get_basic_paper_details,
-    get_paper_details,
-    sanitize_filename_part,
+    DEFAULT_CUSTOM_FILENAME_TEMPLATE,
+    build_proposed_filename,
+    get_basic_document_details,
+    get_document_details,
     unique_path,
-    validate_pdf_filename,
+    validate_document_filename,
+    validate_filename_template,
 )
+from document_types import SUPPORTED_DOCUMENT_EXTENSIONS, is_processable_document
 from settings import AppSettings, SettingsManager
+
+
+DOCUMENT_FILE_TYPES = [
+    ("Supported documents", "*.pdf *.docx"),
+    ("PDF documents", "*.pdf"),
+    ("Word documents", "*.docx"),
+]
+FILENAME_STYLE_LABELS = {
+    "smart": "Smart (recommended)",
+    "journal_compact": "Compact journal citation",
+    "journal_detailed": "Detailed journal citation",
+    "author_year_title": "Author – year – title",
+    "title_year_type": "Title – year – type",
+    "custom": "Custom template",
+}
+FILENAME_STYLE_IDS = {label: identifier for identifier, label in FILENAME_STYLE_LABELS.items()}
 
 # --- NEW: DnD-enabled CTk root to keep CTk overlays/alpha in sync with main window ---
 class DnDCTk(ctk.CTk, TkinterDnD.DnDWrapper):
@@ -41,7 +59,7 @@ class DnDCTk(ctk.CTk, TkinterDnD.DnDWrapper):
         TkinterDnD.DnDWrapper.__init__(self)
 
 class TextboxRedirector:
-    MOVED_PATH_RE = re.compile(r"MOVED: '.*' -> '([^']+)'")
+    MOVED_PATH_RE = re.compile(r"MOVED: .* -> (.+)$")
 
     def __init__(self, textbox: ctk.CTkTextbox):
         self.textbox = textbox
@@ -49,29 +67,50 @@ class TextboxRedirector:
         self.textbox.tag_config("log_link", foreground="#4da3ff", underline=True)
         self.textbox.tag_bind("log_link", "<Enter>", lambda _event: self.textbox.configure(cursor="hand2"))
         self.textbox.tag_bind("log_link", "<Leave>", lambda _event: self.textbox.configure(cursor=""))
+        # A disabled Tk Text still delivers mouse/tag bindings, so the log stays
+        # clickable while users cannot type into or delete from it.
+        self._set_read_only()
+
+    def _set_read_only(self):
+        self.textbox.configure(state="disabled")
+
+    def _set_editable(self):
+        self.textbox.configure(state="normal")
 
     def write(self, text):
         self.textbox.after(0, self._write_on_main_thread, text)
 
     def _write_on_main_thread(self, text):
-        for line in text.splitlines(keepends=True):
-            has_newline = line.endswith(("\n", "\r"))
-            line_text = line.rstrip("\r\n")
-            self.textbox.insert("end", line_text)
-            self._append_move_links(line_text)
-            if has_newline:
-                self.textbox.insert("end", "\n")
-        self.textbox.see("end")
+        self._set_editable()
+        try:
+            for line in text.splitlines(keepends=True):
+                has_newline = line.endswith(("\n", "\r"))
+                line_text = line.rstrip("\r\n")
+                self.textbox.insert("end", line_text)
+                self._append_move_links(line_text)
+                if has_newline:
+                    self.textbox.insert("end", "\n")
+            self.textbox.see("end")
+        finally:
+            self._set_read_only()
+
+    def clear_display(self):
+        """Clear only the on-screen widget; the persistent log file is untouched."""
+        self._set_editable()
+        try:
+            self.textbox.delete("1.0", "end")
+        finally:
+            self._set_read_only()
 
     def _append_move_links(self, line_text: str):
         match = self.MOVED_PATH_RE.search(line_text)
         if not match:
             return
-        paper_path = Path(match.group(1))
+        paper_path = Path(match.group(1).strip().strip("'"))
         self.textbox.insert("end", "  ")
         self._append_link("View Location", lambda path=paper_path: self._open_location(path))
         self.textbox.insert("end", "  ")
-        self._append_link("View Paper", lambda path=paper_path: self._open_paper(path))
+        self._append_link("View Document", lambda path=paper_path: self._open_paper(path))
 
     def _append_link(self, label: str, callback):
         self.link_count += 1
@@ -144,12 +183,77 @@ def add_tooltip(widget, text: str):
     ToolTip(widget, text)
     return widget
 
+
+def center_window_over_master(window, master, *, min_width=0, min_height=0):
+    """Size a dialog to its requested content and center it over the main window."""
+    try:
+        master.update_idletasks()
+        window.update_idletasks()
+
+        # Use Tk's virtual desktop rather than only the primary screen. A main
+        # window on a monitor left/above the primary display has negative screen
+        # coordinates, so primary-screen clamping would misplace its dialogs.
+        virtual_x = window.winfo_vrootx()
+        virtual_y = window.winfo_vrooty()
+        virtual_width = window.winfo_vrootwidth() or window.winfo_screenwidth()
+        virtual_height = window.winfo_vrootheight() or window.winfo_screenheight()
+        width = min(max(min_width, window.winfo_width(), window.winfo_reqwidth()), max(320, virtual_width - 32))
+        height = min(max(min_height, window.winfo_height(), window.winfo_reqheight()), max(240, virtual_height - 64))
+        master_width = max(master.winfo_width(), master.winfo_reqwidth())
+        master_height = max(master.winfo_height(), master.winfo_reqheight())
+        x = max(virtual_x + 16, min(master.winfo_rootx() + (master_width - width) // 2, virtual_x + virtual_width - width - 16))
+        y = max(virtual_y + 16, min(master.winfo_rooty() + (master_height - height) // 2, virtual_y + virtual_height - height - 48))
+
+        window.geometry(f"{width}x{height}+{x}+{y}")
+        window.lift()
+        window.focus_force()
+    except Exception:
+        # A dialog can be destroyed before its queued placement callback runs.
+        pass
+
+
+def create_centered_messagebox(master, *, center_on=None, **kwargs):
+    """Create a CTk message box centered over the main application window."""
+    messagebox = CTkMessagebox(master=master, **kwargs)
+    center_target = center_on or master
+    messagebox.after_idle(lambda: center_window_over_master(messagebox, center_target))
+    return messagebox
+
+
+def paths_overlap(first: Path, second: Path) -> bool:
+    """Return whether two directory paths are the same or one contains the other."""
+    try:
+        first_resolved = first.expanduser().resolve()
+        second_resolved = second.expanduser().resolve()
+    except OSError:
+        first_resolved = first.expanduser()
+        second_resolved = second.expanduser()
+    return (
+        first_resolved == second_resolved
+        or first_resolved in second_resolved.parents
+        or second_resolved in first_resolved.parents
+    )
+
+
+def is_within_folder(candidate: Path, folder: Path) -> bool:
+    """Return whether *candidate* is the folder or one of its descendants."""
+
+    try:
+        candidate.expanduser().resolve().relative_to(folder.expanduser().resolve())
+        return True
+    except (OSError, ValueError):
+        return False
+
 # --- NEW: Custom Dialog for Editing Filenames ---
 class FilenameEditorDialog(ctk.CTkToplevel):
-    def __init__(self, master, original_name: str, ai_title: str, proposed_name: str):
+    def __init__(self, master, original_name: str, details: dict, proposed_name: str):
         super().__init__(master)
+        self.main_window = master
+        self.original_suffix = Path(original_name).suffix.lower()
         self.title("Propose & Edit Filename")
-        self.geometry("600x250")
+        self.geometry("720x460")
+        self.minsize(640, 380)
+        self.resizable(True, True)
         self.transient(master)
         self.grab_set()
 
@@ -157,18 +261,44 @@ class FilenameEditorDialog(ctk.CTkToplevel):
 
         # Layout
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(2, weight=1)
+        self.grid_rowconfigure(0, weight=1, minsize=190)
+        self.grid_rowconfigure(1, weight=0)
+        self.grid_rowconfigure(2, weight=0)
 
         # Info Frame
-        info_frame = ctk.CTkFrame(self, fg_color="transparent")
+        info_frame = ctk.CTkScrollableFrame(self, fg_color="transparent", height=210)
         info_frame.grid(row=0, column=0, padx=15, pady=15, sticky="ew")
         info_frame.grid_columnconfigure(1, weight=1)
 
         ctk.CTkLabel(info_frame, text="Original File:", font=ctk.CTkFont(weight="bold")).grid(row=0, column=0, sticky="w")
         ctk.CTkLabel(info_frame, text=original_name, wraplength=450).grid(row=0, column=1, sticky="w", padx=5)
         
-        ctk.CTkLabel(info_frame, text="Detected Title:", font=ctk.CTkFont(weight="bold")).grid(row=1, column=0, sticky="w", pady=(5,0))
-        ctk.CTkLabel(info_frame, text=ai_title, wraplength=450).grid(row=1, column=1, sticky="w", padx=5, pady=(5,0))
+        ctk.CTkLabel(info_frame, text="Detected Title:", font=ctk.CTkFont(weight="bold")).grid(row=1, column=0, sticky="nw", pady=(5, 0))
+        ctk.CTkLabel(info_frame, text=details.get("title", "Unknown Title"), wraplength=510, justify="left").grid(row=1, column=1, sticky="w", padx=5, pady=(5, 0))
+        ctk.CTkLabel(info_frame, text="Document Type:", font=ctk.CTkFont(weight="bold")).grid(row=2, column=0, sticky="nw", pady=(5, 0))
+        confidence = details.get("confidence", 0.0)
+        try:
+            confidence_text = f"{float(confidence):.0%} confidence"
+        except (TypeError, ValueError):
+            confidence_text = "confidence unknown"
+        ctk.CTkLabel(
+            info_frame,
+            text=f"{details.get('document_type_label', 'Unknown Document Type')} ({confidence_text})",
+            wraplength=510,
+            justify="left",
+        ).grid(row=2, column=1, sticky="w", padx=5, pady=(5, 0))
+        warnings = details.get("warnings") or []
+        if details.get("needs_review") or warnings:
+            review_message = "Review recommended."
+            if warnings:
+                review_message = f"Review recommended: {warnings[0]}"
+            ctk.CTkLabel(
+                info_frame,
+                text=review_message,
+                text_color="#f6c344",
+                wraplength=590,
+                justify="left",
+            ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(10, 0))
 
         # Entry Frame
         entry_frame = ctk.CTkFrame(self)
@@ -187,16 +317,21 @@ class FilenameEditorDialog(ctk.CTkToplevel):
 
         self.skip_button = ctk.CTkButton(button_frame, text="Skip File", command=self._on_skip)
         self.skip_button.grid(row=0, column=0, padx=5, pady=5, sticky="ew")
-        add_tooltip(self.skip_button, "Leave this PDF where it is and move on without sorting it.")
+        add_tooltip(self.skip_button, "Leave this document where it is and move on without sorting it.")
         self.continue_button = ctk.CTkButton(button_frame, text="Continue", command=self._on_continue)
         self.continue_button.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
         add_tooltip(self.continue_button, "Accept the filename shown here and continue to folder selection.")
 
+        self.after_idle(lambda: center_window_over_master(self, self.main_window, min_width=640, min_height=380))
+    def _messagebox(self, **kwargs):
+        return create_centered_messagebox(self, center_on=self.main_window, **kwargs)
+
+
     def _on_continue(self):
         try:
-            self.result = validate_pdf_filename(self.filename_entry.get())
+            self.result = validate_document_filename(self.filename_entry.get(), self.original_suffix)
         except ValueError as e:
-            CTkMessagebox(master=self, title="Invalid Filename", message=str(e), icon="warning")
+            self._messagebox(title="Invalid Filename", message=str(e), icon="warning")
             return
         self.destroy()
 
@@ -207,8 +342,11 @@ class FilenameEditorDialog(ctk.CTkToplevel):
 class SettingsDialog(ctk.CTkToplevel):
     def __init__(self, master, settings: AppSettings):
         super().__init__(master)
+        self.main_window = master
         self.title("Settings")
-        self.geometry("760x410")
+        self.geometry("820x650")
+        self.minsize(700, 560)
+        self.resizable(True, True)
         self.transient(master)
         self.grab_set()
         self.result = None
@@ -216,7 +354,7 @@ class SettingsDialog(ctk.CTkToplevel):
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(0, weight=1)
 
-        frame = ctk.CTkFrame(self)
+        frame = ctk.CTkScrollableFrame(self)
         frame.grid(row=0, column=0, padx=16, pady=16, sticky="nsew")
         frame.grid_columnconfigure(1, weight=1)
 
@@ -224,13 +362,19 @@ class SettingsDialog(ctk.CTkToplevel):
         self.sorted_var = ctk.StringVar(value=str(settings.sorted_folder or ""))
         self.api_key_var = ctk.StringVar(value=settings.api_key or "")
         self.naming_mode_var = ctk.StringVar(value=settings.clean_naming_mode())
+        filename_format = settings.clean_filename_format()
+        self.filename_format_var = ctk.StringVar(value=FILENAME_STYLE_LABELS[filename_format])
+        self.custom_filename_template_var = ctk.StringVar(
+            value=settings.custom_filename_template or DEFAULT_CUSTOM_FILENAME_TEMPLATE
+        )
         self.watch_launch_var = ctk.BooleanVar(value=settings.watch_and_launch_enabled)
+        self.allow_cloud_ai_word_var = ctk.BooleanVar(value=settings.allow_cloud_ai_for_word_documents)
 
         ctk.CTkLabel(frame, text="To Sort folder").grid(row=0, column=0, padx=10, pady=(14, 6), sticky="w")
         ctk.CTkEntry(frame, textvariable=self.watch_var).grid(row=0, column=1, padx=10, pady=(14, 6), sticky="ew")
         self.watch_browse_button = ctk.CTkButton(frame, text="Browse", width=90, command=self._browse_watch)
         self.watch_browse_button.grid(row=0, column=2, padx=10, pady=(14, 6))
-        add_tooltip(self.watch_browse_button, "Choose the folder the app watches and copies new PDFs into.")
+        add_tooltip(self.watch_browse_button, "Choose the incoming folder the app watches and copies supported PDFs and Word documents into.")
 
         ctk.CTkLabel(frame, text="Sorted papers root").grid(row=1, column=0, padx=10, pady=6, sticky="w")
         ctk.CTkEntry(frame, textvariable=self.sorted_var).grid(row=1, column=1, padx=10, pady=6, sticky="ew")
@@ -251,14 +395,62 @@ class SettingsDialog(ctk.CTkToplevel):
         self.api_help_button.grid(row=3, column=2, padx=10, pady=6)
         add_tooltip(self.api_help_button, "Show concise setup instructions for Gemini AI naming.")
 
+        ctk.CTkLabel(frame, text="Filename style").grid(row=4, column=0, padx=10, pady=(14, 6), sticky="w")
+        self.filename_style_menu = ctk.CTkOptionMenu(
+            frame,
+            variable=self.filename_format_var,
+            values=list(FILENAME_STYLE_LABELS.values()),
+            command=lambda _value: self._update_filename_style_controls(),
+        )
+        self.filename_style_menu.grid(row=4, column=1, padx=10, pady=(14, 6), sticky="w")
+        add_tooltip(
+            self.filename_style_menu,
+            "Choose how verified metadata is arranged in the proposed filename. This does not change AI/privacy mode.",
+        )
+
+        ctk.CTkLabel(frame, text="Custom template").grid(row=5, column=0, padx=10, pady=6, sticky="nw")
+        self.custom_filename_template_entry = ctk.CTkEntry(
+            frame,
+            textvariable=self.custom_filename_template_var,
+        )
+        self.custom_filename_template_entry.grid(row=5, column=1, columnspan=2, padx=10, pady=6, sticky="ew")
+        add_tooltip(
+            self.custom_filename_template_entry,
+            "Available only for Custom template. The original PDF or DOCX extension is always retained automatically.",
+        )
+        self.filename_style_preview = ctk.CTkLabel(frame, text="", justify="left", wraplength=650)
+        self.filename_style_preview.grid(row=6, column=0, columnspan=3, padx=10, pady=(2, 10), sticky="w")
+        ctk.CTkLabel(
+            frame,
+            text=(
+                "Custom tokens: {author_last}, {author_last_et_al}, {first_author_full}, {journal}, "
+                "{journal_abbreviation}, {venue_or_publisher}, {volume}, {issue}, {year}, {title}, {document_type}. "
+                "Unavailable fields are omitted; the original .pdf or .docx extension is always retained."
+            ),
+            justify="left",
+            wraplength=650,
+            text_color=("gray35", "gray70"),
+        ).grid(row=7, column=0, columnspan=3, padx=10, pady=(0, 10), sticky="w")
+
+        self.word_ai_check = ctk.CTkCheckBox(
+            frame,
+            text="Allow AI analysis of Word documents (.docx)",
+            variable=self.allow_cloud_ai_word_var,
+        )
+        self.word_ai_check.grid(row=8, column=1, padx=10, pady=(8, 4), sticky="w")
+        add_tooltip(
+            self.word_ai_check,
+            "Off by default. Enable only if you want the app to send extracted Word-document text to Gemini for AI naming.",
+        )
+
         self.watch_launch_check = ctk.CTkCheckBox(
             frame,
-            text="Start Watch and Launch at Windows login/unlock",
+            text="Enable Watch & Launch at Windows login/unlock",
             variable=self.watch_launch_var,
             command=self._on_watch_launch_toggle,
         )
-        self.watch_launch_check.grid(row=4, column=1, padx=10, pady=(10, 6), sticky="w")
-        add_tooltip(self.watch_launch_check, "Run the lightweight watcher in the background so PDFs added later can open the sorter app.")
+        self.watch_launch_check.grid(row=9, column=1, padx=10, pady=(4, 12), sticky="w")
+        add_tooltip(self.watch_launch_check, "Run the lightweight watcher in the background so supported files added later can open the sorter app.")
 
         button_frame = ctk.CTkFrame(self, fg_color="transparent")
         button_frame.grid(row=1, column=0, padx=16, pady=(0, 16), sticky="ew")
@@ -269,16 +461,57 @@ class SettingsDialog(ctk.CTkToplevel):
         self.save_button = ctk.CTkButton(button_frame, text="Save", command=self._save)
         self.save_button.grid(row=0, column=1, padx=6, sticky="ew")
         add_tooltip(self.save_button, "Save these folder choices for this PC and restart folder watching.")
+        self.custom_filename_template_var.trace_add("write", lambda *_args: self._update_filename_style_controls())
+        self._update_filename_style_controls()
+        self.after_idle(lambda: center_window_over_master(self, self.main_window, min_width=700, min_height=560))
+
+    def _messagebox(self, **kwargs):
+        return create_centered_messagebox(self, center_on=self.main_window, **kwargs)
+
+    def _selected_filename_format(self):
+        return FILENAME_STYLE_IDS.get(self.filename_format_var.get(), "smart")
+
+    def _update_filename_style_controls(self):
+        filename_format = self._selected_filename_format()
+        is_custom = filename_format == "custom"
+        self.custom_filename_template_entry.configure(state="normal" if is_custom else "disabled")
+        sample_details = {
+            "title": "A Practical Example Study",
+            "primary_creator": "Jane Doe",
+            "author": "Doe",
+            "year": "2024",
+            "document_type": "journal_article",
+            "venue_or_publisher": "Journal of Example Research",
+            "journal": "Journal of Example Research",
+            "journal_abbreviation": "J Example Res",
+            "volume": "12",
+            "issue": "3",
+            "is_multiple_creators": True,
+        }
+        template = self.custom_filename_template_var.get().strip()
+        if is_custom:
+            try:
+                validate_filename_template(template)
+            except ValueError as exc:
+                self.filename_style_preview.configure(text=f"Custom template needs attention: {exc}")
+                return
+        preview = build_proposed_filename(
+            sample_details,
+            ".pdf",
+            filename_format=filename_format,
+            custom_template=template,
+        )
+        self.filename_style_preview.configure(text=f"Example: {preview}")
 
     def _browse_watch(self):
         initial = self.watch_var.get() or str(Path.home())
-        selected = filedialog.askdirectory(parent=self, title="Choose To Sort folder", initialdir=initial)
+        selected = filedialog.askdirectory(parent=self.main_window, title="Choose To Sort folder", initialdir=initial)
         if selected:
             self.watch_var.set(selected)
 
     def _browse_sorted(self):
         initial = self.sorted_var.get() or str(Path.home())
-        selected = filedialog.askdirectory(parent=self, title="Choose Sorted papers root", initialdir=initial)
+        selected = filedialog.askdirectory(parent=self.main_window, title="Choose Sorted papers root", initialdir=initial)
         if selected:
             self.sorted_var.set(selected)
 
@@ -291,18 +524,48 @@ class SettingsDialog(ctk.CTkToplevel):
     def _save(self):
         watch = self.watch_var.get().strip()
         sorted_folder = self.sorted_var.get().strip()
+        filename_format = self._selected_filename_format()
+        custom_template = self.custom_filename_template_var.get().strip()
+        if filename_format == "custom":
+            try:
+                custom_template = validate_filename_template(custom_template)
+            except ValueError as exc:
+                self._messagebox(title="Invalid Custom Template", message=str(exc), icon="warning")
+                return
         if self.watch_launch_var.get() and not watch:
             self._browse_watch()
             watch = self.watch_var.get().strip()
         if not watch or not sorted_folder:
-            CTkMessagebox(master=self, title="Missing Folders", message="Choose both folders before saving.", icon="warning")
+            self._messagebox(title="Missing Folders", message="Choose both folders before saving.", icon="warning")
+            return
+        try:
+            # Persist stable absolute locations so the GUI and its optional
+            # background helper cannot interpret a relative folder differently.
+            watch_path = Path(watch).expanduser().resolve()
+            sorted_path = Path(sorted_folder).expanduser().resolve()
+        except OSError as exc:
+            self._messagebox(
+                title="Invalid Folder",
+                message=f"Could not resolve the selected folder paths:\n{exc}",
+                icon="warning",
+            )
+            return
+        if paths_overlap(watch_path, sorted_path):
+            self._messagebox(
+                title="Folders Overlap",
+                message="The To Sort folder and Sorted papers root must be separate folders. Neither can contain the other.",
+                icon="warning",
+            )
             return
         self.result = AppSettings(
-            watch_folder=Path(watch).expanduser(),
-            sorted_folder=Path(sorted_folder).expanduser(),
+            watch_folder=watch_path,
+            sorted_folder=sorted_path,
             api_key=self.api_key_var.get().strip(),
             naming_mode=self.naming_mode_var.get(),
+            filename_format=filename_format,
+            custom_filename_template=custom_template,
             watch_and_launch_enabled=self.watch_launch_var.get(),
+            allow_cloud_ai_for_word_documents=self.allow_cloud_ai_word_var.get(),
         )
         self.destroy()
 
@@ -312,14 +575,15 @@ class SettingsDialog(ctk.CTkToplevel):
 
     def _show_api_help(self):
         webbrowser.open("https://aistudio.google.com/app/apikey")
-        CTkMessagebox(
-            master=self,
+        self._messagebox(
             title="Gemini API Key",
             message=(
                 "AI naming is optional.\n\n"
                 "1. Create a Gemini API key in Google AI Studio.\n"
                 "2. Paste it into the Gemini API key field.\n"
                 "3. Set Naming mode to Automatic or AI.\n\n"
+                "Basic naming stays on this PC. AI mode sends an extracted text excerpt to Gemini. "
+                "Word-document AI analysis stays off unless you check its separate opt-in.\n\n"
                 "Without a key, Basic naming still works."
             ),
             icon="info",
@@ -360,6 +624,12 @@ class App:
         if arguments:
             return [command, *arguments.split()]
         return [command]
+
+    def _watch_launcher_process_marker(self):
+        """Return the exact executable or source entry point used by watcher mode."""
+        if getattr(sys, "frozen", False):
+            return str(Path(sys.executable).resolve())
+        return str((self.SCRIPT_DIRECTORY / "main.py").resolve())
 
     def _current_windows_user(self):
         domain = os.environ.get("USERDOMAIN", "").strip()
@@ -497,9 +767,11 @@ class App:
         self._stop_watch_launcher_process()
 
     def _stop_watch_launcher_process(self):
+        marker = self._watch_launcher_process_marker().replace("'", "''")
         powershell = (
             "Get-CimInstance Win32_Process | "
-            "Where-Object { $_.CommandLine -like '*--watch*' -and ($_.Name -eq 'Lit Sorter 1.0.exe' -or $_.Name -like 'python*.exe') } | "
+            "Where-Object { $_.CommandLine -and $_.CommandLine -like '*--watch*' -and "
+            f"$_.CommandLine -like '*{marker}*' }} | "
             "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
         )
         self._run_hidden(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", powershell])
@@ -507,6 +779,8 @@ class App:
     def _sync_watch_launch_setting(self):
         if self.settings.watch_and_launch_enabled:
             try:
+                # Restart the helper so a changed To Sort folder takes effect now.
+                self._stop_watch_launcher_process()
                 self._remove_watch_launch_startup_file()
                 self._install_watch_launch_task()
                 logging.info("Watch and Launch enabled for Windows login/unlock.")
@@ -531,12 +805,19 @@ class App:
         self.settings = self.settings_manager.load()
         self.WATCH_FOLDER = self.settings.watch_folder
         self.SORTED_FOLDER = self.settings.sorted_folder
+        self._folder_access_error = None
 
         # Unified log for both sorting and naming
-        self.LOG_FILE = self._default_log_file()
         if self.settings.is_complete():
-            self.WATCH_FOLDER.mkdir(parents=True, exist_ok=True)
-            self.SORTED_FOLDER.mkdir(parents=True, exist_ok=True)
+            try:
+                self.WATCH_FOLDER.mkdir(parents=True, exist_ok=True)
+                self.SORTED_FOLDER.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                # A disconnected drive or changed permission should not prevent
+                # the UI from opening so the folders can be repaired in Settings.
+                self._folder_access_error = str(exc)
+        self.LOG_FILE = self._default_log_file()
+        self._prepare_log_file()
         
         self.main_frame = ctk.CTkFrame(self.root)
         self.main_frame.grid(row=0, column=0, sticky="nsew")
@@ -559,14 +840,14 @@ class App:
         self.toolbar_buttons.grid(row=0, column=0, pady=4, sticky="e")
         self.btn_name_papers = ctk.CTkButton(
             self.toolbar_buttons,
-            text="Name Papers",
+            text="Name Documents",
             image=self.toolbar_icons["name"],
             compound="left",
-            width=130,
+            width=150,
             command=self.rename_papers_flow,
         )
         self.btn_name_papers.pack(side="left", padx=4)
-        add_tooltip(self.btn_name_papers, "Use Gemini to rename PDFs in place without moving them into a sorted folder.")
+        add_tooltip(self.btn_name_papers, "Rename PDFs or Word documents in place without moving them into a sorted folder.")
         self.btn_refresh = ctk.CTkButton(
             self.toolbar_buttons,
             text="Refresh",
@@ -576,7 +857,7 @@ class App:
             command=self.refresh_to_sort_folder,
         )
         self.btn_refresh.pack(side="left", padx=4)
-        add_tooltip(self.btn_refresh, "Rescan the To Sort folder and queue any PDFs that are waiting there.")
+        add_tooltip(self.btn_refresh, "Rescan the To Sort folder and queue supported documents that are waiting there.")
         self.btn_view_sorted = ctk.CTkButton(
             self.toolbar_buttons,
             text="Sorted",
@@ -597,6 +878,17 @@ class App:
         )
         self.btn_view_log.pack(side="left", padx=4)
         add_tooltip(self.btn_view_log, "Open the text log that records app actions and moved papers.")
+        self.btn_clear_log_display = ctk.CTkButton(
+            self.toolbar_buttons,
+            text="Clear Display",
+            width=118,
+            command=self.clear_log_display,
+        )
+        self.btn_clear_log_display.pack(side="left", padx=4)
+        add_tooltip(
+            self.btn_clear_log_display,
+            "Clear only the on-screen log display. The paper_sorter_log.txt file is not changed.",
+        )
         self.settings_button = ctk.CTkButton(
             self.toolbar_buttons,
             text="Settings",
@@ -615,10 +907,10 @@ class App:
         self.top_frame.drop_target_register(DND_FILES); self.top_frame.dnd_bind('<<Drop>>', self.handle_drop)
         self.plus_label = ctk.CTkLabel(self.top_frame, text="+", font=ctk.CTkFont(size=50)); self.plus_label.grid(row=0, column=0, pady=(20, 0))
         self.browse_text_frame = ctk.CTkFrame(self.top_frame, fg_color="transparent"); self.browse_text_frame.grid(row=1, column=0, pady=(10, 20))
-        self.drag_label = ctk.CTkLabel(self.browse_text_frame, text="To sort papers, drag them here, or ", font=ctk.CTkFont(size=14)); self.drag_label.pack(side="left")
+        self.drag_label = ctk.CTkLabel(self.browse_text_frame, text="To sort documents, drag them here, or ", font=ctk.CTkFont(size=14)); self.drag_label.pack(side="left")
         self.browse_label = ctk.CTkLabel(self.browse_text_frame, text="browse", font=ctk.CTkFont(size=14, underline=True), text_color=("blue", "cyan"), cursor="hand2")
         self.browse_label.pack(side="left"); self.browse_label.bind("<Button-1>", lambda e: self.select_and_add_papers())
-        add_tooltip(self.browse_label, "Select one or more PDF files to copy into the To Sort folder.")
+        add_tooltip(self.browse_label, "Select one or more PDF or Word (.docx) files to copy into the To Sort folder.")
         self.after_browse_label = ctk.CTkLabel(self.browse_text_frame, text=" your computer...", font=ctk.CTkFont(size=14)); self.after_browse_label.pack(side="left")
         
         self.bottom_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
@@ -627,10 +919,19 @@ class App:
         
         self.log_textbox = ctk.CTkTextbox(self.bottom_frame, activate_scrollbars=True); self.log_textbox.grid(row=0, column=0, padx=0, pady=(0, 10), sticky="nsew")
         self.redirector = TextboxRedirector(self.log_textbox)
-        logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s', handlers=[
-            logging.FileHandler(self.LOG_FILE, encoding='utf-8'), logging.StreamHandler(self.redirector)])
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(message)s',
+            handlers=[logging.FileHandler(self.LOG_FILE, encoding='utf-8'), logging.StreamHandler(self.redirector)],
+            force=True,
+        )
         self.file_queue = Queue(); self.rename_queue = Queue(); self.gui_queue = Queue()
         self.queue_lock = threading.Lock(); self.queued_sort_paths = set()
+        self.snoozed_sort_signatures = {}
+        self.ignored_watch_event_until = {}
+        self.gui_modal_depth = 0
+        self.gui_queue_after_id = None
+        self.app_started = False
         self.rename_batch_total = 0; self.rename_batch_done = 0
         self.rename_batch_renamed = 0; self.rename_batch_skipped = 0
         self.root.after(100, self.start_app)
@@ -648,20 +949,57 @@ class App:
         except Exception:
             pass
 
+    def _messagebox(self, **kwargs):
+        return create_centered_messagebox(self.root, center_on=self.root, **kwargs)
+
+    def _run_modal(self, operation):
+        """Run a modal action while keeping the queue pump from opening dialogs."""
+        self.gui_modal_depth = getattr(self, "gui_modal_depth", 0) + 1
+        try:
+            return operation()
+        finally:
+            self.gui_modal_depth = max(0, self.gui_modal_depth - 1)
+
+    def _wait_for_dialog(self, dialog):
+        self._run_modal(lambda: self.root.wait_window(dialog))
+        self._normalize_root()
+
+    def _modal_is_active(self):
+        if getattr(self, "gui_modal_depth", 0):
+            return True
+        try:
+            return self.root.grab_current() is not None
+        except Exception:
+            return False
+
+    def _schedule_gui_queue(self, delay=200):
+        if getattr(self, "gui_queue_after_id", None) is None:
+            self.gui_queue_after_id = self.root.after(delay, self.process_gui_queue)
+
     def _ensure_settings(self):
-        if self.settings and self.settings.is_complete():
+        if self.settings and self.settings.is_complete() and not self._folder_access_error:
             return True
         return self.open_settings()
 
     def _default_log_file(self):
-        if self.settings and self.settings.sorted_folder:
+        if self.settings and self.settings.sorted_folder and not getattr(self, "_folder_access_error", None):
             return self.settings.sorted_folder / 'paper_sorter_log.txt'
-        return self.SCRIPT_DIRECTORY / 'paper_sorter_log.txt'
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            return Path(appdata) / "AI Paper Sorter" / "paper_sorter_log.txt"
+        return Path(tempfile.gettempdir()) / "AI Paper Sorter" / "paper_sorter_log.txt"
+
+    def _prepare_log_file(self):
+        """Ensure the file logger has a writable directory before it starts."""
+        try:
+            self.LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            self.LOG_FILE = Path(tempfile.gettempdir()) / "AI Paper Sorter" / "paper_sorter_log.txt"
+            self.LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 
     def open_settings(self):
         dialog = SettingsDialog(self.root, self.settings or AppSettings())
-        self.root.wait_window(dialog)
-        self._normalize_root()
+        self._wait_for_dialog(dialog)
         if not dialog.result:
             return False
         try:
@@ -669,12 +1007,14 @@ class App:
             dialog.result.sorted_folder.mkdir(parents=True, exist_ok=True)
             self.settings_manager.save(dialog.result)
         except Exception as e:
-            CTkMessagebox(master=self.root, title="Settings Error", message=f"Could not save settings:\n{e}", icon="error")
+            self._messagebox(title="Settings Error", message=f"Could not save settings:\n{e}", icon="error")
             return False
         self.settings = dialog.result
+        self._folder_access_error = None
         self.WATCH_FOLDER = self.settings.watch_folder
         self.SORTED_FOLDER = self.settings.sorted_folder
         self.LOG_FILE = self._default_log_file()
+        self._prepare_log_file()
         if hasattr(self, "redirector"):
             self._replace_log_file_handler()
         logging.info(f"Settings saved. To Sort: {self.WATCH_FOLDER}; Sorted: {self.SORTED_FOLDER}")
@@ -686,23 +1026,24 @@ class App:
                 self.settings_manager.save(self.settings)
             except Exception:
                 pass
-            CTkMessagebox(
-                master=self.root,
+            self._messagebox(
                 title="Watch and Launch Error",
                 message=f"Settings were saved, but Watch and Launch could not be updated:\n{e}",
                 icon="warning",
             )
-        if hasattr(self, "observer"):
+        if getattr(self, "app_started", False) and hasattr(self, "observer"):
             try:
                 self.observer.stop()
                 self.observer.join(timeout=3)
             except Exception:
                 pass
+        if getattr(self, "app_started", False):
             self.start_watcher()
-        self.process_existing_files()
+            self.process_existing_files()
         return True
 
     def _replace_log_file_handler(self):
+        self._prepare_log_file()
         root_logger = logging.getLogger()
         formatter = logging.Formatter('%(asctime)s - %(message)s')
         for handler in list(root_logger.handlers):
@@ -715,15 +1056,31 @@ class App:
         root_logger.setLevel(logging.INFO)
 
     def start_app(self):
+        self.app_started = True
         if not self._active_api_key():
             logging.info("Gemini API key is not set. Basic naming is available. To enable AI naming, open Settings, click Get Key, and paste your key.")
         self.worker_thread = threading.Thread(target=self.processing_loop, daemon=True); self.worker_thread.start()
         self.rename_worker_thread = threading.Thread(target=self.rename_processing_loop, daemon=True); self.rename_worker_thread.start()
-        if self.settings.is_complete():
+        if self.settings.is_complete() and not self._folder_access_error:
             self.start_watcher()
             self.process_existing_files()
         else:
-            logging.info("Folder settings are not configured yet. Choose Settings or add a paper to continue.")
+            if self._folder_access_error:
+                logging.warning("Saved folders are unavailable: %s", self._folder_access_error)
+                self.root.after(
+                    0,
+                    lambda: self._messagebox(
+                        title="Saved Folder Unavailable",
+                        message=(
+                            "The saved To Sort or Sorted papers folder cannot be opened.\n\n"
+                            f"{self._folder_access_error}\n\n"
+                            "Open Settings and choose accessible folders."
+                        ),
+                        icon="warning",
+                    ),
+                )
+            else:
+                logging.info("Folder settings are not configured yet. Choose Settings or add a document to continue.")
             self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         self.process_gui_queue()
     def on_closing(self):
@@ -733,21 +1090,36 @@ class App:
             except Exception: pass
         self.root.destroy()
     def start_watcher(self):
-        if not self.settings.is_complete():
+        if not self.settings.is_complete() or self._folder_access_error:
             return
         if hasattr(self, "observer") and self.observer.is_alive():
             return
         event_handler = self.create_watchdog_handler(); self.observer = Observer()
         self.observer.schedule(event_handler, str(self.WATCH_FOLDER), recursive=False); self.observer.start()
         logging.info(f"Watching for new files in: {self.WATCH_FOLDER}"); self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+
     def create_watchdog_handler(self):
+        try:
+            watched_folder = self.WATCH_FOLDER.resolve()
+        except OSError:
+            watched_folder = self.WATCH_FOLDER
+
         class MyHandler(FileSystemEventHandler):
-            def __init__(self, enqueue): self.enqueue = enqueue
+            def __init__(self, enqueue):
+                self.enqueue = enqueue
 
             def _maybe_enqueue(self, path):
-                pdf_path = Path(path)
-                if pdf_path.suffix.lower() == ".pdf":
-                    self.enqueue(pdf_path)
+                document_path = Path(path)
+                if not is_processable_document(document_path):
+                    return
+                try:
+                    is_direct_child = document_path.resolve().parent == watched_folder
+                except OSError:
+                    is_direct_child = document_path.parent == watched_folder
+                # A move *out* of To Sort reports an event to this observer too.
+                # Never feed its external destination back into the sort queue.
+                if is_direct_child:
+                    self.enqueue(document_path)
 
             def on_created(self, event):
                 if not event.is_directory:
@@ -763,26 +1135,69 @@ class App:
 
         return MyHandler(self._queue_sort_file)
 
-    def _sort_queue_key(self, pdf_path: Path):
+    def _sort_queue_key(self, document_path: Path):
         try:
-            return str(pdf_path.resolve()).lower()
+            return str(document_path.resolve()).lower()
         except Exception:
-            return str(pdf_path).lower()
+            return str(document_path).lower()
 
-    def _queue_sort_file(self, pdf_path: Path):
-        key = self._sort_queue_key(pdf_path)
+    @staticmethod
+    def _file_signature(document_path: Path):
+        try:
+            stat = document_path.stat()
+            return stat.st_size, stat.st_mtime_ns
+        except OSError:
+            return None
+
+    def _snooze_sort_file(self, document_path: Path):
+        """Do not re-prompt an unchanged file after the user skips or cancels it."""
+        key = self._sort_queue_key(document_path)
         with self.queue_lock:
+            self.snoozed_sort_signatures[key] = self._file_signature(document_path)
+
+    def _suppress_watch_events_for(self, document_path: Path, seconds=5.0):
+        """Ignore short-lived filesystem events caused by our own rename action."""
+        key = self._sort_queue_key(document_path)
+        now = time.monotonic()
+        with self.queue_lock:
+            ignored = getattr(self, "ignored_watch_event_until", {})
+            self.ignored_watch_event_until = ignored
+            for stale_key, expiry in list(ignored.items()):
+                if expiry <= now:
+                    ignored.pop(stale_key, None)
+            ignored[key] = now + seconds
+
+    def _queue_sort_file(self, document_path: Path, *, force=False):
+        if not is_processable_document(document_path):
+            return
+        key = self._sort_queue_key(document_path)
+        signature = self._file_signature(document_path)
+        with self.queue_lock:
+            now = time.monotonic()
+            ignored = getattr(self, "ignored_watch_event_until", {})
+            self.ignored_watch_event_until = ignored
+            for stale_key, expiry in list(ignored.items()):
+                if expiry <= now:
+                    ignored.pop(stale_key, None)
+            if not force and ignored.get(key, 0) > now:
+                return
+            if force:
+                self.snoozed_sort_signatures.pop(key, None)
+            elif key in self.snoozed_sort_signatures:
+                if self.snoozed_sort_signatures[key] == signature:
+                    return
+                self.snoozed_sort_signatures.pop(key, None)
             if key in self.queued_sort_paths:
-                logging.info(f"Already queued for sorting: {pdf_path.name}")
                 return
             self.queued_sort_paths.add(key)
-        self.file_queue.put(pdf_path)
-    def _clear_queued_sort_file(self, pdf_path: Path):
-        key = self._sort_queue_key(pdf_path)
+        self.file_queue.put(document_path)
+
+    def _clear_queued_sort_file(self, document_path: Path):
+        key = self._sort_queue_key(document_path)
         with self.queue_lock:
             self.queued_sort_paths.discard(key)
 
-    def _wait_for_file_ready(self, pdf_path: Path, timeout_seconds=60, stable_seconds=2):
+    def _wait_for_file_ready(self, document_path: Path, timeout_seconds=60, stable_seconds=2):
         deadline = time.monotonic() + timeout_seconds
         last_signature = None
         stable_since = None
@@ -790,12 +1205,12 @@ class App:
 
         while time.monotonic() < deadline:
             try:
-                stat = pdf_path.stat()
+                stat = document_path.stat()
                 if stat.st_size == 0:
                     stable_since = None
                     last_signature = None
                 else:
-                    with open(pdf_path, "rb"):
+                    with open(document_path, "rb"):
                         pass
                     signature = (stat.st_size, stat.st_mtime_ns)
                     if signature == last_signature:
@@ -816,163 +1231,212 @@ class App:
             time.sleep(0.5)
 
         detail = f" Last error: {last_error}" if last_error else ""
-        logging.warning(f"Timed out waiting for file to finish copying: {pdf_path.name}.{detail}")
+        logging.warning(f"Timed out waiting for file to finish copying: {document_path.name}.{detail}")
         return False
 
     def processing_loop(self):
         while True:
-            pdf_path = self.file_queue.get()
+            document_path = self.file_queue.get()
             clear_when_done = True
             try:
-                if not pdf_path.exists():
-                    logging.warning(f"File disappeared before sorting: {pdf_path.name}")
+                if not document_path.exists():
+                    logging.warning(f"File disappeared before sorting: {document_path.name}")
                     continue
-                if not self._wait_for_file_ready(pdf_path):
+                if not self._wait_for_file_ready(document_path):
                     continue
-                logging.info(f"--- Processing (sort): {pdf_path.name} ---")
-                details = self._get_details_for_pdf(pdf_path)
+                logging.info(f"--- Processing (sort): {document_path.name} ---")
+                details = self._get_details_for_document(document_path)
                 if details:
                     clear_when_done = False
-                    self.gui_queue.put(("sort", pdf_path, details))
-                else: logging.error(f"Could not get details for {pdf_path.name}.")
+                    self.gui_queue.put(("sort", document_path, details))
+                else:
+                    logging.error(f"Could not get details for {document_path.name}.")
             finally:
                 if clear_when_done:
-                    self._clear_queued_sort_file(pdf_path)
+                    self._clear_queued_sort_file(document_path)
+                self.file_queue.task_done()
+
     def rename_processing_loop(self):
         while True:
-            pdf_path = self.rename_queue.get()
-            logging.info(f"--- Processing (rename): {pdf_path.name} ---")
-            details = self._get_details_for_pdf(pdf_path)
-            if details: self.gui_queue.put(("rename", pdf_path, details))
-            else:
-                logging.error(f"Could not get details for {pdf_path.name}.")
-                self.gui_queue.put(("rename_failed", pdf_path, {}))
+            document_path = self.rename_queue.get()
+            try:
+                logging.info(f"--- Processing (rename): {document_path.name} ---")
+                details = self._get_details_for_document(document_path)
+                if details:
+                    self.gui_queue.put(("rename", document_path, details))
+                else:
+                    logging.error(f"Could not get details for {document_path.name}.")
+                    self.gui_queue.put(("rename_failed", document_path, {}))
+            finally:
+                self.rename_queue.task_done()
 
     def _active_api_key(self):
         return (self.settings.api_key if self.settings else "") or self.ENV_API_KEY
 
-    def _get_details_for_pdf(self, pdf_path: Path):
+    def _get_details_for_document(self, document_path: Path):
         mode = self.settings.clean_naming_mode() if self.settings else "Automatic"
         api_key = self._active_api_key()
         if mode == "Basic" or not api_key:
             if mode == "AI" and not api_key:
                 logging.warning("AI naming was selected, but no Gemini API key is set. Using Basic naming instead.")
-            return get_basic_paper_details(pdf_path)
+            return get_basic_document_details(document_path)
 
-        details = get_paper_details(pdf_path, api_key)
+        allow_cloud_ai_for_word = bool(self.settings and self.settings.allow_cloud_ai_for_word_documents)
+        if document_path.suffix.lower() == ".docx" and not allow_cloud_ai_for_word:
+            logging.info(
+                "Using Basic naming for %s because AI analysis of Word documents is off in Settings.",
+                document_path.name,
+            )
+            return get_basic_document_details(document_path)
+
+        details = get_document_details(document_path, api_key, allow_cloud_ai=allow_cloud_ai_for_word)
         if details:
-            details["source"] = "AI"
             return details
-        logging.warning(f"AI naming failed for {pdf_path.name}. Using Basic naming instead.")
-        return get_basic_paper_details(pdf_path)
+        logging.warning(f"AI naming failed for {document_path.name}. Using Basic naming instead.")
+        return get_basic_document_details(document_path)
 
-    def _proposed_filename(self, details: dict) -> str:
-        source = details.get("source", "AI")
-        author = cleanup_author_string(details.get('author', 'Unknown'))
-        year = details.get('year', 'Unknown')
-        journal = details.get('journal', 'Unknown')
-        title = details.get('title', 'Unknown Title')
-        is_multiple = bool(details.get('is_multiple_authors', True))
+    def _proposed_filename(self, details: dict, document_path: Path) -> str:
+        filename_format = self.settings.clean_filename_format() if self.settings else "smart"
+        custom_template = self.settings.custom_filename_template if self.settings else ""
+        return build_proposed_filename(
+            details,
+            document_path.suffix,
+            filename_format=filename_format,
+            custom_template=custom_template,
+        )
 
-        if source == "Basic" and (author == "Unknown" or journal == "Unknown"):
-            title_part = sanitize_filename_part(title)[:90] or "Paper"
-            year_part = sanitize_filename_part(year)
-            return f"{title_part}_{year_part}.pdf"
-
-        author_string = f"{author} et al" if is_multiple else author
-        new_filename_base = f"{sanitize_filename_part(author_string)}_{sanitize_filename_part(journal)}_{year}"
-        return f"{new_filename_base}.pdf"
     def process_gui_queue(self):
+        self.gui_queue_after_id = None
         try:
-            while not self.gui_queue.empty():
-                mode, pdf_path, details = self.gui_queue.get()
+            # wait_window() runs a nested Tk event loop. Process one item at a
+            # time and abstain while any modal is active, or timer callbacks can
+            # otherwise stack multiple filename dialogs on top of each other.
+            if self._modal_is_active():
+                return
+            try:
+                mode, document_path, details = self.gui_queue.get_nowait()
+            except Empty:
+                return
+            self.gui_modal_depth += 1
+            try:
                 if mode == "sort":
                     try:
-                        self.handle_user_confirmation_sort(pdf_path, details)
+                        self.handle_user_confirmation_sort(document_path, details)
                     finally:
-                        self._clear_queued_sort_file(pdf_path)
-                elif mode == "rename": self.handle_rename_confirmation(pdf_path, details)
-                elif mode == "rename_failed": self._finish_rename_item(skipped=True)
+                        self._clear_queued_sort_file(document_path)
+                elif mode == "rename":
+                    self.handle_rename_confirmation(document_path, details)
+                elif mode == "rename_failed":
+                    self._finish_rename_item(skipped=True)
+            finally:
+                self.gui_modal_depth = max(0, self.gui_modal_depth - 1)
+                self.gui_queue.task_done()
         finally:
-            self.root.after(200, self.process_gui_queue)
+            self._schedule_gui_queue()
 
-    # --- FIXED: Reworked function + normalization after every modal ---
-    def handle_user_confirmation_sort(self, pdf_path: Path, details: dict):
-        details['author'] = cleanup_author_string(details.get('author', 'Unknown'))
-        new_filename_ext = self._proposed_filename(details); title = details.get('title', 'Unknown Title')
-        
-        # --- STEP 1: Propose and Edit Name ---
-        name_dialog = FilenameEditorDialog(self.root, original_name=pdf_path.name, ai_title=title, proposed_name=new_filename_ext)
-        self.root.wait_window(name_dialog)
-        self._normalize_root()  # <-- normalize after modal
+    def handle_user_confirmation_sort(self, document_path: Path, details: dict):
+        new_filename_ext = self._proposed_filename(details, document_path)
+        name_dialog = FilenameEditorDialog(
+            self.root,
+            original_name=document_path.name,
+            details=details,
+            proposed_name=new_filename_ext,
+        )
+        self._wait_for_dialog(name_dialog)
         final_filename = name_dialog.result
 
         if not final_filename:
-            logging.info(f"User skipped '{pdf_path.name}' at name proposal stage."); return
+            self._snooze_sort_file(document_path)
+            logging.info(f"User skipped '{document_path.name}' at name proposal stage.")
+            return
 
-        # --- STEP 2: Check for Duplicates (based on the user-approved name) ---
         final_filename_base = Path(final_filename).stem
-        if list(self.SORTED_FOLDER.rglob(f"{final_filename_base}*.pdf")):
-            msg_text = (f"A potential duplicate exists for:'{final_filename}'\n\nAdd anyway?")
-            msg = CTkMessagebox(master=self.root, title="Suspected Duplicate", message=msg_text, icon="question", option_1="Skip", option_2="Add Anyway")
+        duplicate_pattern = f"{final_filename_base}*{document_path.suffix.lower()}"
+        if list(self.SORTED_FOLDER.rglob(duplicate_pattern)):
+            msg_text = f"A potential duplicate exists for: '{final_filename}'\n\nAdd anyway?"
+            msg = self._messagebox(
+                title="Suspected Duplicate",
+                message=msg_text,
+                icon="question",
+                option_1="Skip",
+                option_2="Add Anyway",
+            )
             choice = msg.get()
-            self._normalize_root()  # <-- normalize after modal
+            self._normalize_root()
             if choice == "Skip":
-                logging.warning(f"DUPLICATE: User chose to skip '{pdf_path.name}'.")
+                self._snooze_sort_file(document_path)
+                logging.warning(f"DUPLICATE: User chose to skip '{document_path.name}'.")
                 return
-        
-        # --- STEP 3: Choose the destination folder ---
+
         dest_folder = self.choose_destination_folder()
-        if not dest_folder: 
-            logging.info(f"User canceled destination selection for '{pdf_path.name}'."); return
+        if not dest_folder:
+            self._snooze_sort_file(document_path)
+            logging.info(f"User canceled destination selection for '{document_path.name}'.")
+            return
 
         final_destination_path = dest_folder / final_filename
-        
-        # --- STEP 4: Final Confirmation (No Edit button needed anymore) ---
         try:
-            rel_folder = final_destination_path.parent.relative_to(self.SCRIPT_DIRECTORY)
+            rel_folder = final_destination_path.parent.relative_to(self.SORTED_FOLDER)
             folder_display = f"...\\{rel_folder}"
         except ValueError:
             folder_display = str(final_destination_path.parent)
         confirm_text = (f"Destination Folder:\n{folder_display}\n\nFilename:\n{final_destination_path.name}")
-        confirm_msg = CTkMessagebox(master=self.root, title="Confirm Move", message=confirm_text, icon="question", option_1="Cancel", option_2="Confirm")
+        confirm_msg = self._messagebox(
+            title="Confirm Move",
+            message=confirm_text,
+            icon="question",
+            option_1="Cancel",
+            option_2="Confirm",
+        )
         confirm_choice = confirm_msg.get()
-        self._normalize_root()  # <-- normalize after modal
-        
+        self._normalize_root()
         if confirm_choice == "Cancel":
-            logging.info(f"User canceled final move for '{pdf_path.name}'."); return
-        
-        # --- STEP 5: Move the file ---
+            self._snooze_sort_file(document_path)
+            logging.info(f"User canceled final move for '{document_path.name}'.")
+            return
+
         try:
             final_destination_path.parent.mkdir(parents=True, exist_ok=True)
             if final_destination_path.exists():
                 final_destination_path = unique_path(final_destination_path)
-            shutil.move(str(pdf_path), str(final_destination_path))
-            logging.info(f"MOVED: '{pdf_path.name}' -> '{final_destination_path}'")
+            shutil.move(str(document_path), str(final_destination_path))
+            logging.info(f"MOVED: {document_path.name} -> {final_destination_path}")
         except Exception as e:
+            self._snooze_sort_file(document_path)
             logging.error(f"Failed to move file: {e}")
         finally:
-            self._normalize_root()  # extra safety
+            self._normalize_root()
 
     def choose_destination_folder(self):
         if not self._ensure_settings():
             return None
-        selected = filedialog.askdirectory(
-            parent=self.root,
-            title="Choose Destination Folder",
-            initialdir=str(self.SORTED_FOLDER),
-            mustexist=False,
+        selected = self._run_modal(
+            lambda: filedialog.askdirectory(
+                parent=self.root,
+                title="Choose Destination Folder",
+                initialdir=str(self.SORTED_FOLDER),
+                mustexist=False,
+            )
         )
         self._normalize_root()
         if not selected:
             return None
         dest = Path(selected)
+        if is_within_folder(dest, self.WATCH_FOLDER):
+            self._messagebox(
+                title="Invalid Destination",
+                message=(
+                    "The To Sort folder and its subfolders cannot be destinations. "
+                    "Choose a folder outside the watched inbox to prevent the file from being queued again."
+                ),
+                icon="warning",
+            )
+            return None
         try:
             dest.relative_to(self.SORTED_FOLDER)
             return dest
         except ValueError:
-            msg = CTkMessagebox(
-                master=self.root,
+            msg = self._messagebox(
                 title="Outside Sorted Folder",
                 message="This folder is outside your sorted papers root. Use it anyway?",
                 icon="question",
@@ -983,73 +1447,96 @@ class App:
             self._normalize_root()
             return dest if choice == "Use Anyway" else None
 
-    # (The rename flow can also be updated to use the new dialog if desired)
     def rename_papers_flow(self):
         if not self._ensure_settings():
             return
         if self.rename_batch_total:
-            CTkMessagebox(master=self.root, title="Rename In Progress", message="Please wait for the current rename batch to finish.")
+            self._messagebox(title="Rename In Progress", message="Please wait for the current rename batch to finish.")
             return
-        # Prompt user to select a folder or files
-        choice = CTkMessagebox(master=self.root, title="Rename Papers", message="Would you like to select a folder or individual PDF files?", icon="question", option_1="Folder", option_2="Files", option_3="Cancel").get()
+        choice_dialog = self._messagebox(
+            title="Rename Documents",
+            message="Would you like to select a folder or individual PDF/Word files?",
+            icon="question",
+            option_1="Folder",
+            option_2="Files",
+            option_3="Cancel",
+        )
+        choice = self._run_modal(choice_dialog.get)
+        self._normalize_root()
         if choice == "Cancel":
-            logging.info("User canceled the rename papers operation.")
+            logging.info("User canceled the rename documents operation.")
             return
-        pdf_files = []
+        document_files = []
         if choice == "Folder":
-            folder = filedialog.askdirectory(title="Select Folder Containing PDFs")
+            folder = self._run_modal(
+                lambda: filedialog.askdirectory(parent=self.root, title="Select Folder Containing Documents")
+            )
             if not folder:
-                logging.info("No folder selected for renaming papers.")
+                logging.info("No folder selected for renaming documents.")
                 return
             folder_path = Path(folder)
-            pdf_files = list(folder_path.glob('*.pdf'))
+            document_files = [path for path in folder_path.iterdir() if path.is_file() and is_processable_document(path)]
         elif choice == "Files":
-            selected_files = filedialog.askopenfilenames(title="Select PDF files to rename", filetypes=[("PDF Documents", "*.pdf")])
+            selected_files = self._run_modal(
+                lambda: filedialog.askopenfilenames(
+                    parent=self.root,
+                    title="Select Documents to Rename",
+                    filetypes=DOCUMENT_FILE_TYPES,
+                )
+            )
             if not selected_files:
-                logging.info("No files selected for renaming.")
+                logging.info("No documents selected for renaming.")
                 return
-            pdf_files = [Path(f) for f in selected_files]
-        if not pdf_files:
-            logging.info("No PDF files found for renaming.")
-            CTkMessagebox(master=self.root, title="No PDFs", message="No PDF files found.")
+            document_files = [Path(file_path) for file_path in selected_files if is_processable_document(file_path)]
+        self._normalize_root()
+        if not document_files:
+            logging.info("No supported documents found for renaming.")
+            self._messagebox(title="No Documents", message="No supported PDF or Word documents were found.")
             return
-        self.rename_batch_total = len(pdf_files)
+        self.rename_batch_total = len(document_files)
         self.rename_batch_done = 0
         self.rename_batch_renamed = 0
         self.rename_batch_skipped = 0
-        for pdf_path in pdf_files:
-            self.rename_queue.put(pdf_path)
-        logging.info(f"Queued {self.rename_batch_total} PDF(s) for AI naming.")
-    def handle_rename_confirmation(self, pdf_path: Path, details: dict):
-        details['author'] = cleanup_author_string(details.get('author', 'Unknown'))
-        new_filename_ext = self._proposed_filename(details)
-        title = details.get('title', 'Unknown Title')
+        for document_path in document_files:
+            self.rename_queue.put(document_path)
+        logging.info(f"Queued {self.rename_batch_total} document(s) for naming.")
 
-        name_dialog = FilenameEditorDialog(self.root, original_name=pdf_path.name, ai_title=title, proposed_name=new_filename_ext)
-        self.root.wait_window(name_dialog)
-        self._normalize_root()
+    def handle_rename_confirmation(self, document_path: Path, details: dict):
+        new_filename_ext = self._proposed_filename(details, document_path)
+
+        name_dialog = FilenameEditorDialog(
+            self.root,
+            original_name=document_path.name,
+            details=details,
+            proposed_name=new_filename_ext,
+        )
+        self._wait_for_dialog(name_dialog)
         final_filename = name_dialog.result
         if not final_filename:
-            logging.info(f"User skipped '{pdf_path.name}' at name proposal stage.")
+            logging.info(f"User skipped '{document_path.name}' at name proposal stage.")
             self._finish_rename_item(skipped=True)
             return
 
-        final_path = pdf_path.parent / final_filename
+        final_path = document_path.parent / final_filename
         if final_path.exists():
-            CTkMessagebox(master=self.root, title="File Exists", message=f"A file named {final_filename} already exists. Skipping.")
+            self._messagebox(title="File Exists", message=f"A file named {final_filename} already exists. Skipping.")
             self._normalize_root()
-            logging.info(f"Skipped renaming '{pdf_path.name}' because '{final_filename}' already exists.")
+            logging.info(f"Skipped renaming '{document_path.name}' because '{final_filename}' already exists.")
             self._finish_rename_item(skipped=True)
             return
         try:
-            pdf_path.rename(final_path)
-            logging.info(f"Renamed (AI Naming): {pdf_path.name} -> {final_filename}")
+            # If this file lives in To Sort, its rename emits a watcher event.
+            # Suppress that app-generated event so Name Documents stays rename-only.
+            self._suppress_watch_events_for(final_path)
+            document_path.rename(final_path)
+            logging.info(f"Renamed: {document_path.name} -> {final_filename}")
             self._finish_rename_item(renamed=True)
         except Exception as e:
-            logging.error(f"Failed to rename {pdf_path.name}: {e}")
-            CTkMessagebox(master=self.root, title="Rename Error", message=f"Failed to rename {pdf_path.name}: {e}")
+            logging.error(f"Failed to rename {document_path.name}: {e}")
+            self._messagebox(title="Rename Error", message=f"Failed to rename {document_path.name}: {e}")
             self._normalize_root()
             self._finish_rename_item(skipped=True)
+
     def _finish_rename_item(self, renamed=False, skipped=False):
         if renamed:
             self.rename_batch_renamed += 1
@@ -1058,41 +1545,56 @@ class App:
         self.rename_batch_done += 1
         if self.rename_batch_total and self.rename_batch_done >= self.rename_batch_total:
             logging.info(f"Rename process finished. {self.rename_batch_renamed} renamed, {self.rename_batch_skipped} skipped, {self.rename_batch_total} total.")
-            CTkMessagebox(master=self.root, title="Rename Complete", message=f"Renaming complete.\nRenamed: {self.rename_batch_renamed}\nSkipped: {self.rename_batch_skipped}\nTotal: {self.rename_batch_total}")
+            self._messagebox(title="Rename Complete", message=f"Renaming complete.\nRenamed: {self.rename_batch_renamed}\nSkipped: {self.rename_batch_skipped}\nTotal: {self.rename_batch_total}")
             self.rename_batch_total = 0
-        
-    def process_existing_files(self):
-        if not self.settings.is_complete():
+
+    def process_existing_files(self, *, force=False):
+        if not self.settings.is_complete() or self._folder_access_error:
             return
         logging.info(f"Scanning for existing files in {self.WATCH_FOLDER}...")
-        pdf_files = list(self.WATCH_FOLDER.glob('*.pdf'))
-        if pdf_files:
-            logging.info(f"Found {len(pdf_files)} PDF(s) to queue for processing.")
-            for pdf_path in pdf_files:
-                self._queue_sort_file(pdf_path)
+        try:
+            document_files = sorted(
+                path for path in self.WATCH_FOLDER.iterdir() if path.is_file() and is_processable_document(path)
+            )
+        except OSError as exc:
+            logging.error(f"Could not scan the To Sort folder: {exc}")
+            return
+        if document_files:
+            logging.info(f"Found {len(document_files)} supported document(s) to queue for processing.")
+            for document_path in document_files:
+                self._queue_sort_file(document_path, force=force)
         else:
-            logging.info("No PDF files found; ToSort folder is empty.")
+            logging.info("No supported documents found; the To Sort folder is empty.")
 
     def refresh_to_sort_folder(self):
         settings_were_ready = self.settings and self.settings.is_complete()
         if not self._ensure_settings():
             return
         if settings_were_ready:
-            self.process_existing_files()
+            self.process_existing_files(force=True)
 
     def select_and_add_papers(self):
         if not self._ensure_settings():
             return
-        selected_files = filedialog.askopenfilenames(title="Select PDF files to add", filetypes=[("PDF Documents", "*.pdf")])
+        selected_files = self._run_modal(
+            lambda: filedialog.askopenfilenames(
+                parent=self.root,
+                title="Select Documents to Add",
+                filetypes=DOCUMENT_FILE_TYPES,
+            )
+        )
         if not selected_files: logging.info("No files selected."); return
         added = 0
         for file_path_str in selected_files:
             source_path = Path(file_path_str)
+            if not is_processable_document(source_path):
+                logging.warning(f"Skipped unsupported document: {source_path.name}")
+                continue
             try:
                 destination_path = unique_path(self.WATCH_FOLDER / source_path.name)
                 shutil.copy2(source_path, destination_path); added += 1
             except Exception as e: logging.error(f"Failed to copy '{source_path.name}': {e}")
-        logging.info(f"User added {added} paper(s) to the ToSort folder.")
+        logging.info(f"User added {added} document(s) to the To Sort folder.")
         
     def handle_drop(self, event):
         if not self._ensure_settings():
@@ -1100,12 +1602,14 @@ class App:
         file_paths_str = self.root.tk.splitlist(event.data); added_count = 0
         for path_str in file_paths_str:
             source_path = Path(path_str)
-            if source_path.suffix.lower() == '.pdf':
+            if is_processable_document(source_path):
                 try:
                     destination_path = unique_path(self.WATCH_FOLDER / source_path.name)
                     shutil.copy2(source_path, destination_path); added_count += 1
                 except Exception as e: logging.error(f"Failed to copy '{source_path.name}': {e}")
-        if added_count > 0: logging.info(f"User dropped {added_count} paper(s) to the ToSort folder.")
+            else:
+                logging.warning(f"Skipped unsupported document: {source_path.name}")
+        if added_count > 0: logging.info(f"User dropped {added_count} document(s) into the To Sort folder.")
         
     def open_watch_folder(self):
         if not self._ensure_settings():
@@ -1122,3 +1626,7 @@ class App:
         # Open the unified log file in the default text editor
         import os
         os.startfile(self.LOG_FILE)
+
+    def clear_log_display(self):
+        """Clear the visible log without modifying the on-disk audit trail."""
+        self.redirector.clear_display()
