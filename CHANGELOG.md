@@ -1,6 +1,14 @@
 # Changelog
 
-## 1.1.0 — Unreleased
+## 1.1.1 — Unreleased
+
+### Fixed
+
+- Log links now work on the first click while the log remains read-only; they no longer depend on a prior mouse movement over the link.
+- **View Location** opens Windows Explorer and highlights the current document when available.
+- Historical log links now recover one uniquely matching paper if it was later moved within the configured Sorted folder. Ambiguous or missing matches show a clear centered explanation instead of only writing a file path/error into the log.
+
+## 1.1.0 — 2026-09-02
 
 ### Added
 

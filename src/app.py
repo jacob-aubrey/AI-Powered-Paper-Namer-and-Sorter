@@ -61,12 +61,19 @@ class DnDCTk(ctk.CTk, TkinterDnD.DnDWrapper):
 class TextboxRedirector:
     MOVED_PATH_RE = re.compile(r"MOVED: .* -> (.+)$")
 
-    def __init__(self, textbox: ctk.CTkTextbox):
+    def __init__(self, textbox: ctk.CTkTextbox, resolve_document_path=None, on_link_error=None):
         self.textbox = textbox
         self.link_count = 0
+        self._link_callbacks = {}
+        self._resolve_document_path_callback = resolve_document_path
+        self._on_link_error = on_link_error
         self.textbox.tag_config("log_link", foreground="#4da3ff", underline=True)
-        self.textbox.tag_bind("log_link", "<Enter>", lambda _event: self.textbox.configure(cursor="hand2"))
-        self.textbox.tag_bind("log_link", "<Leave>", lambda _event: self.textbox.configure(cursor=""))
+        # Bind on the Text widget rather than on each tag. In a disabled Tk Text
+        # widget, tag click bindings can depend on a prior pointer-motion event.
+        # This hit-tests the actual click, so links work on the first click while
+        # the log remains read-only.
+        self.textbox.bind("<Button-1>", self._on_textbox_click, add="+")
+        self.textbox.bind("<Motion>", self._on_textbox_motion, add="+")
         # A disabled Tk Text still delivers mouse/tag bindings, so the log stays
         # clickable while users cannot type into or delete from it.
         self._set_read_only()
@@ -99,6 +106,8 @@ class TextboxRedirector:
         self._set_editable()
         try:
             self.textbox.delete("1.0", "end")
+            self._link_callbacks.clear()
+            self.link_count = 0
         finally:
             self._set_read_only()
 
@@ -115,20 +124,93 @@ class TextboxRedirector:
     def _append_link(self, label: str, callback):
         self.link_count += 1
         tag = f"log_link_{self.link_count}"
+        self._link_callbacks[tag] = callback
         self.textbox.insert("end", label, ("log_link", tag))
-        self.textbox.tag_bind(tag, "<Button-1>", lambda _event: callback())
+
+    def _callback_at_event(self, event):
+        """Return the link callback beneath a mouse event, if there is one."""
+        try:
+            index = self.textbox.index(f"@{event.x},{event.y}")
+            for tag in self.textbox.tag_names(index):
+                callback = self._link_callbacks.get(tag)
+                if callback:
+                    return callback
+        except Exception:
+            # A malformed or late Tk event should never make the log unusable.
+            return None
+        return None
+
+    def _on_textbox_click(self, event):
+        callback = self._callback_at_event(event)
+        if callback:
+            callback()
+            # Do not let the disabled Text widget also handle this link click.
+            return "break"
+        return None
+
+    def _on_textbox_motion(self, event):
+        self.textbox.configure(cursor="hand2" if self._callback_at_event(event) else "")
+
+    def _resolve_available_document_path(self, paper_path: Path) -> Path | None:
+        if paper_path.is_file():
+            return paper_path
+        if not self._resolve_document_path_callback:
+            return None
+        try:
+            resolved_path = self._resolve_document_path_callback(paper_path)
+        except Exception:
+            return None
+        if resolved_path:
+            resolved_path = Path(resolved_path)
+            if resolved_path.is_file():
+                logging.info("Resolved a moved document from an older log link: %s", paper_path.name)
+                return resolved_path
+        return None
+
+    def _report_link_error(self, action: str, paper_path: Path, error: Exception):
+        logging.error("Failed to %s for '%s': %s", action, paper_path, error)
+        if self._on_link_error:
+            self._on_link_error(action, paper_path, error)
 
     def _open_location(self, paper_path: Path):
+        resolved_path = self._resolve_available_document_path(paper_path)
+        folder_path = resolved_path.parent if resolved_path else paper_path.parent
+        if not folder_path.is_dir():
+            self._report_link_error(
+                "open location",
+                paper_path,
+                FileNotFoundError("The saved folder no longer exists."),
+            )
+            return
         try:
-            os.startfile(str(paper_path.parent))
-        except Exception as e:
-            logging.error(f"Failed to open location for '{paper_path}': {e}")
+            if os.name == "nt":
+                # Explorer reliably opens a folder and highlights the paper when
+                # it still exists. If the paper was later removed, the folder is
+                # still useful and is opened normally.
+                explorer_arguments = ["explorer.exe"]
+                explorer_arguments.append(f"/select,{resolved_path}" if resolved_path else str(folder_path))
+                subprocess.Popen(explorer_arguments, shell=False)
+            else:
+                webbrowser.open(folder_path.resolve().as_uri())
+        except (OSError, subprocess.SubprocessError) as error:
+            self._report_link_error("open location", paper_path, error)
 
     def _open_paper(self, paper_path: Path):
+        resolved_path = self._resolve_available_document_path(paper_path)
+        if not resolved_path:
+            self._report_link_error(
+                "open document",
+                paper_path,
+                FileNotFoundError("The document was moved, renamed, or deleted."),
+            )
+            return
         try:
-            os.startfile(str(paper_path))
-        except Exception as e:
-            logging.error(f"Failed to open paper '{paper_path}': {e}")
+            if os.name == "nt":
+                os.startfile(str(resolved_path), "open")
+            else:
+                webbrowser.open(resolved_path.resolve().as_uri())
+        except OSError as error:
+            self._report_link_error("open document", paper_path, error)
 
     def flush(self): pass
 
@@ -918,7 +1000,11 @@ class App:
         self.bottom_frame.grid_columnconfigure(0, weight=1); self.bottom_frame.grid_rowconfigure(0, weight=1)
         
         self.log_textbox = ctk.CTkTextbox(self.bottom_frame, activate_scrollbars=True); self.log_textbox.grid(row=0, column=0, padx=0, pady=(0, 10), sticky="nsew")
-        self.redirector = TextboxRedirector(self.log_textbox)
+        self.redirector = TextboxRedirector(
+            self.log_textbox,
+            resolve_document_path=self._resolve_logged_document_path,
+            on_link_error=self._show_log_link_error,
+        )
         logging.basicConfig(
             level=logging.INFO,
             format='%(asctime)s - %(message)s',
@@ -988,6 +1074,58 @@ class App:
         if appdata:
             return Path(appdata) / "AI Paper Sorter" / "paper_sorter_log.txt"
         return Path(tempfile.gettempdir()) / "AI Paper Sorter" / "paper_sorter_log.txt"
+
+    def _resolve_logged_document_path(self, logged_path: Path) -> Path | None:
+        """Find one safe replacement for a stale historical log target.
+
+        A log must keep the path that was true at the time of the move. If the
+        user later files that document elsewhere, a link can still be useful when
+        exactly one same-named document exists below the configured library root.
+        Ambiguous matches are deliberately not guessed.
+        """
+
+        if logged_path.is_file():
+            return logged_path
+        sorted_root = getattr(self, "SORTED_FOLDER", None)
+        if not sorted_root:
+            return None
+        sorted_root = Path(sorted_root)
+        if not sorted_root.is_dir() or not logged_path.name:
+            return None
+        matches = []
+        try:
+            for candidate in sorted_root.rglob(logged_path.name):
+                if candidate.is_file():
+                    matches.append(candidate)
+                    if len(matches) > 1:
+                        return None
+        except OSError:
+            return None
+        return matches[0] if len(matches) == 1 else None
+
+    def _show_log_link_error(self, action: str, paper_path: Path, error: Exception):
+        """Explain a stale/broken historical link without leaving the user in the log."""
+
+        if isinstance(error, FileNotFoundError):
+            message = (
+                "This log entry remembers where the document was when it was sorted, "
+                "but that file or folder is no longer there.\n\n"
+                "The app looked in your Sorted folder for one clear current match and "
+                "could not safely identify one. The document may have been moved, renamed, "
+                "or deleted.\n\n"
+                f"Document: {paper_path.name}\n\n"
+                "Use the Sorted button to browse for it manually."
+            )
+            title = "This Log Link Is Out of Date"
+        else:
+            subject = "document" if action == "open document" else "folder"
+            message = (
+                f"Windows could not open this {subject}.\n\n"
+                f"Document: {paper_path.name}\n\n"
+                f"Details: {error}"
+            )
+            title = "Could Not Open Link"
+        self._messagebox(title=title, message=message, icon="warning")
 
     def _prepare_log_file(self):
         """Ensure the file logger has a writable directory before it starts."""

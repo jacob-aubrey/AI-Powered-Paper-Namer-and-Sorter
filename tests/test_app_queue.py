@@ -21,6 +21,8 @@ class _FakeTextbox:
     def __init__(self):
         self.state = "normal"
         self.tag_bindings = {}
+        self.widget_bindings = {}
+        self.tags_at_click = ()
         self.inserted = []
         self.deleted = []
 
@@ -29,6 +31,15 @@ class _FakeTextbox:
 
     def tag_bind(self, tag, event, callback):
         self.tag_bindings[(tag, event)] = callback
+
+    def bind(self, event, callback, add=True):
+        self.widget_bindings[event] = callback
+
+    def index(self, _coordinate):
+        return "1.0"
+
+    def tag_names(self, _index):
+        return self.tags_at_click
 
     def configure(self, **kwargs):
         if "state" in kwargs:
@@ -140,16 +151,76 @@ class QueueCoalescingTests(unittest.TestCase):
 
 class LogDisplayTests(unittest.TestCase):
     def test_read_only_log_preserves_clickable_document_link_bindings(self):
-        textbox = _FakeTextbox()
-        redirector = TextboxRedirector(textbox)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            document_path = Path(temporary_directory) / "report.docx"
+            document_path.write_bytes(b"placeholder")
+            textbox = _FakeTextbox()
+            redirector = TextboxRedirector(textbox)
 
-        redirector.write("MOVED: source.docx -> C:\\Library\\report.docx\n")
+            redirector.write(f"MOVED: source.docx -> {document_path}\n")
 
-        self.assertEqual(textbox.state, "disabled")
-        self.assertIn(("log_link_1", "<Button-1>"), textbox.tag_bindings)
-        with patch("app.os.startfile") as startfile:
-            textbox.tag_bindings[("log_link_1", "<Button-1>")](None)
-        startfile.assert_called_once_with(str(Path("C:\\Library\\report.docx").parent))
+            self.assertEqual(textbox.state, "disabled")
+            self.assertIn("<Button-1>", textbox.widget_bindings)
+            # The first appended link is View Location; the second is View Document.
+            textbox.tags_at_click = ("log_link", "log_link_2")
+            with patch("app.os.startfile") as startfile:
+                result = textbox.widget_bindings["<Button-1>"](SimpleNamespace(x=0, y=0))
+            self.assertEqual(result, "break")
+            startfile.assert_called_once_with(str(document_path), "open")
+
+    def test_log_location_link_uses_explorer_and_highlights_existing_document(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            document_path = Path(temporary_directory) / "report.pdf"
+            document_path.write_bytes(b"placeholder")
+            redirector = TextboxRedirector(_FakeTextbox())
+
+            with patch("app.subprocess.Popen") as popen:
+                redirector._open_location(document_path)
+
+            popen.assert_called_once_with(
+                ["explorer.exe", f"/select,{document_path}"], shell=False
+            )
+
+    def test_stale_log_link_uses_one_safe_matching_document(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            replacement = root / "New Category" / "report.pdf"
+            replacement.parent.mkdir()
+            replacement.write_bytes(b"placeholder")
+            stale_path = root / "Old Category" / "report.pdf"
+            redirector = TextboxRedirector(
+                _FakeTextbox(), resolve_document_path=lambda _path: replacement
+            )
+
+            with patch("app.os.startfile") as startfile:
+                redirector._open_paper(stale_path)
+
+            startfile.assert_called_once_with(str(replacement), "open")
+
+    def test_missing_log_link_reports_a_clear_error_without_launching(self):
+        reported = []
+        redirector = TextboxRedirector(
+            _FakeTextbox(), on_link_error=lambda *args: reported.append(args)
+        )
+
+        with patch("app.os.startfile") as startfile, patch("app.logging.error"):
+            redirector._open_paper(Path("C:/missing/report.pdf"))
+
+        startfile.assert_not_called()
+        self.assertEqual(reported[0][0], "open document")
+        self.assertIsInstance(reported[0][2], FileNotFoundError)
+
+    def test_ambiguous_stale_log_link_is_not_guessed(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            (root / "A").mkdir()
+            (root / "B").mkdir()
+            (root / "A" / "same-name.pdf").write_bytes(b"a")
+            (root / "B" / "same-name.pdf").write_bytes(b"b")
+            app = App.__new__(App)
+            app.SORTED_FOLDER = root
+
+            self.assertIsNone(app._resolve_logged_document_path(root / "Old" / "same-name.pdf"))
 
     def test_clear_display_does_not_reenable_text_editing(self):
         textbox = _FakeTextbox()
@@ -159,6 +230,7 @@ class LogDisplayTests(unittest.TestCase):
 
         self.assertEqual(textbox.deleted, [("1.0", "end")])
         self.assertEqual(textbox.state, "disabled")
+        self.assertEqual(redirector._link_callbacks, {})
 
 
 if __name__ == "__main__":
