@@ -27,7 +27,9 @@ class SettingsTests(unittest.TestCase):
                     api_key="test-key-not-for-network",
                     filename_format="journal_detailed",
                     custom_filename_template="{author_last}_{year}",
+                    online_metadata_lookup_enabled=False,
                     allow_cloud_ai_for_word_documents=True,
+                    allow_cloud_ai_for_presentation_documents=True,
                 )
                 manager.save(settings)
                 config_path = appdata / "AI Paper Sorter" / "config.json"
@@ -35,13 +37,17 @@ class SettingsTests(unittest.TestCase):
 
                 self.assertNotIn("api_key", serialized)
                 self.assertIn("api_key_protected", serialized)
+                self.assertFalse(serialized["online_metadata_lookup_enabled"])
                 self.assertTrue(serialized["allow_cloud_ai_for_word_documents"])
+                self.assertTrue(serialized["allow_cloud_ai_for_presentation_documents"])
                 self.assertEqual(serialized["filename_format"], "journal_detailed")
                 loaded = manager.load()
                 self.assertEqual(loaded.api_key, settings.api_key)
                 self.assertEqual(loaded.filename_format, "journal_detailed")
                 self.assertEqual(loaded.custom_filename_template, "{author_last}_{year}")
+                self.assertFalse(loaded.online_metadata_lookup_enabled)
                 self.assertTrue(loaded.allow_cloud_ai_for_word_documents)
+                self.assertTrue(loaded.allow_cloud_ai_for_presentation_documents)
 
     def test_save_removes_plaintext_key_from_a_legacy_portable_config(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -82,6 +88,8 @@ class SettingsTests(unittest.TestCase):
 
             self.assertFalse(settings.watch_and_launch_enabled)
             self.assertFalse(settings.allow_cloud_ai_for_word_documents)
+            self.assertTrue(settings.online_metadata_lookup_enabled)
+            self.assertFalse(settings.allow_cloud_ai_for_presentation_documents)
 
     def test_relative_legacy_paths_are_stabilized_against_the_app_folder(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -104,6 +112,11 @@ class SettingsTests(unittest.TestCase):
         settings = AppSettings(filename_format="not-a-real-format")
 
         self.assertEqual(settings.clean_filename_format(), "smart")
+
+    def test_legacy_ai_mode_migrates_to_smart_metadata_lookup(self):
+        self.assertEqual(AppSettings(naming_mode="AI").clean_naming_mode(), "Automatic")
+        self.assertEqual(AppSettings(naming_mode="something-else").clean_naming_mode(), "Automatic")
+        self.assertEqual(AppSettings(naming_mode="Basic").clean_naming_mode(), "Basic")
 
 
 if __name__ == "__main__":

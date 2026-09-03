@@ -9,13 +9,20 @@ open README.md. This short file is only a quick first-run checklist.
 
 2. Open AI Paper Sorter and click Settings.
    Choose two separate folders:
-   - To Sort folder: incoming PDF and Word (.docx) documents.
+   - To Sort folder: incoming PDF, Word (.docx), and PowerPoint (.pptx or .ppt)
+     documents.
    - Sorted papers root: the library that will receive approved documents.
 
 3. Choose a naming mode.
-   - Automatic: AI when a Gemini key is available; Basic otherwise.
-   - AI: prefer Gemini, with Basic fallback on failure.
-   - Basic: local extraction only; no Gemini key is needed.
+   - Smart metadata lookup (recommended): starts with information inside the file. When it finds
+     an exact DOI, it checks that DOI's public citation record; it uses Gemini
+     only as a backup when you have added your own key.
+   - Local-only privacy mode: stays on your computer. It skips both the DOI web
+     lookup and Gemini, even if the other Settings checkboxes are selected.
+
+   Smart DOI lookup starts on. It sends only the DOI, not the document or its
+   text, to a scholarly metadata service. You can turn that lookup off in
+   Settings if you prefer.
 
    Then choose a Filename style. Smart (recommended) is safest for mixed
    research material. Citation presets and a validated Custom template are
@@ -23,14 +30,18 @@ open README.md. This short file is only a quick first-run checklist.
 
 4. Optional Gemini setup.
    Click Settings > Get Key, create your own key in Google AI Studio, paste it,
-   choose Automatic or AI, then click Save. Never share your key.
+   choose Smart metadata lookup, then click Save. Never share your key.
 
-   Word-document AI analysis is off by default. Turn on its separate Settings
-   checkbox only if you want extracted .docx text sent to Gemini.
+   Word-document and PowerPoint AI analysis are both off by default. Turn on
+   their separate Settings checkboxes only if you want extracted .docx text or
+   .pptx slide text sent to Gemini. PDFs follow Smart metadata lookup's normal Gemini-backup
+   process when a key is available.
 
 5. Sort a document.
-   Drag a PDF or .docx file onto the app, review the proposed name, select a
-   destination folder, and confirm. You can edit every proposed filename.
+   Drag a PDF, .docx, .pptx, or .ppt file onto the app, review the proposed
+   name, select a destination folder, and confirm. You can edit every proposed
+   filename. If the app confidently recognizes supporting information, it adds
+   _SI before the file ending (for example, Article_2026_SI.pdf).
 
 6. Optional background watching.
    Settings > Enable Watch & Launch at Windows login/unlock starts a lightweight
@@ -40,9 +51,12 @@ open README.md. This short file is only a quick first-run checklist.
 Important limitations
 ---------------------
 - Legacy .doc files must be saved as .docx first.
+- Legacy .ppt files can be sorted, but may need more review than modern .pptx
+  files because they are harder to read reliably.
 - Image-only/scanned PDFs need OCR for useful metadata.
 - Review suggestions for reports, theses, letters, and other non-journal items.
 - The app never overwrites an existing destination file; it adds -1, -2, etc.
 - There is no automatic undo. Check the Log for moved-file locations.
 - The on-screen log is read-only. Clear Display clears only the window, never
-  the saved paper_sorter_log.txt file.
+  the saved paper_sorter_log.txt file. Its View Location and View Document
+  links still work normally.

@@ -149,6 +149,59 @@ class QueueCoalescingTests(unittest.TestCase):
         self.assertEqual(len(app.root.scheduled), 1)
 
 
+class SmartSettingsRoutingTests(unittest.TestCase):
+    @staticmethod
+    def _settings(*, mode="Automatic", word_ai=False, presentation_ai=False, online_lookup=True):
+        return SimpleNamespace(
+            api_key="test-key",
+            clean_naming_mode=lambda: mode,
+            allow_cloud_ai_for_word_documents=word_ai,
+            allow_cloud_ai_for_presentation_documents=presentation_ai,
+            online_metadata_lookup_enabled=online_lookup,
+        )
+
+    def test_word_ai_opt_out_keeps_doi_lookup_available(self):
+        app = App.__new__(App)
+        app.settings = self._settings(word_ai=False, online_lookup=True)
+        app.ENV_API_KEY = ""
+        expected = {"source": "DOI"}
+
+        with patch("app.get_document_details", return_value=expected) as get_details:
+            result = app._get_details_for_document(Path("C:/incoming/report.docx"))
+
+        self.assertIs(result, expected)
+        self.assertEqual(get_details.call_args.kwargs["allow_cloud_ai"], False)
+        self.assertEqual(get_details.call_args.kwargs["allow_online_metadata_lookup"], True)
+
+    def test_powerpoint_ai_setting_is_passed_only_for_pptx(self):
+        app = App.__new__(App)
+        app.settings = self._settings(presentation_ai=True, online_lookup=True)
+        app.ENV_API_KEY = ""
+
+        with patch("app.get_document_details", return_value={"source": "Basic"}) as get_details:
+            app._get_details_for_document(Path("C:/incoming/slides.pptx"))
+            app._get_details_for_document(Path("C:/incoming/old-slides.ppt"))
+
+        self.assertTrue(get_details.call_args_list[0].kwargs["allow_cloud_ai"])
+        self.assertFalse(get_details.call_args_list[1].kwargs["allow_cloud_ai"])
+        self.assertTrue(get_details.call_args_list[0].kwargs["allow_online_metadata_lookup"])
+
+    def test_local_only_mode_never_calls_the_smart_lookup(self):
+        app = App.__new__(App)
+        app.settings = self._settings(mode="Basic")
+        app.ENV_API_KEY = ""
+        expected = {"source": "Basic"}
+
+        with patch("app.get_basic_document_details", return_value=expected) as get_basic, patch(
+            "app.get_document_details"
+        ) as get_details:
+            result = app._get_details_for_document(Path("C:/incoming/private.pdf"))
+
+        self.assertIs(result, expected)
+        get_basic.assert_called_once()
+        get_details.assert_not_called()
+
+
 class LogDisplayTests(unittest.TestCase):
     def test_read_only_log_preserves_clickable_document_link_bindings(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

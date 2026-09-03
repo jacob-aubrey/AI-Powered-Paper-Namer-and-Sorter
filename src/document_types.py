@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Union
 
 
-SUPPORTED_DOCUMENT_EXTENSIONS = frozenset({".pdf", ".docx"})
+SUPPORTED_DOCUMENT_EXTENSIONS = frozenset({".pdf", ".docx", ".ppt", ".pptx"})
 
 PathLike = Union[str, Path]
 

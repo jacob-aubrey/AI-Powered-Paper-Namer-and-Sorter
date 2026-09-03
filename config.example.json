@@ -6,5 +6,7 @@
   "filename_format": "smart",
   "custom_filename_template": "{author_last_et_al}_{journal_abbreviation}_{year}",
   "watch_and_launch_enabled": false,
-  "allow_cloud_ai_for_word_documents": false
+  "online_metadata_lookup_enabled": true,
+  "allow_cloud_ai_for_word_documents": false,
+  "allow_cloud_ai_for_presentation_documents": false
 }

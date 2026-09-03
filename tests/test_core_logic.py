@@ -48,12 +48,13 @@ class CoreLogicTests(unittest.TestCase):
         self.assertIn("Technical Report", extraction.text)
         self.assertEqual(extraction.metadata["title"], "A Practical Technical Report")
 
-    def test_basic_docx_details_are_reviewable_and_extension_safe(self):
+    def test_basic_docx_details_are_extension_safe_without_a_fake_confidence_score(self):
         details = get_basic_document_details(self.docx_path)
 
         self.assertEqual(details["source"], "Basic")
         self.assertEqual(details["document_type"], "technical_report")
-        self.assertTrue(details["needs_review"])
+        self.assertEqual(details["evidence_label"], "Suggested from local document information")
+        self.assertNotIn("confidence", details)
         proposal = build_proposed_filename(details, self.docx_path.suffix)
         self.assertTrue(proposal.endswith(".docx"))
         self.assertNotIn(".pdf", proposal)
@@ -66,8 +67,12 @@ class CoreLogicTests(unittest.TestCase):
     def test_filename_validation_preserves_original_type(self):
         self.assertEqual(validate_document_filename("Edited Report", ".docx"), "Edited Report.docx")
         self.assertEqual(validate_document_filename("Edited.Report", ".docx"), "Edited.Report.docx")
+        self.assertEqual(validate_document_filename("Slide Deck", ".pptx"), "Slide Deck.pptx")
+        self.assertEqual(validate_document_filename("Legacy Slides", ".ppt"), "Legacy Slides.ppt")
         with self.assertRaisesRegex(ValueError, "original .docx extension"):
             validate_document_filename("Edited Report.pdf", ".docx")
+        with self.assertRaisesRegex(ValueError, "original .pptx extension"):
+            validate_document_filename("Slide Deck.pdf", ".pptx")
 
     def test_normalizer_does_not_treat_string_false_as_true(self):
         details = normalize_document_details(
@@ -87,6 +92,7 @@ class CoreLogicTests(unittest.TestCase):
         self.assertFalse(details["is_multiple_creators"])
         self.assertFalse(details["needs_review"])
         self.assertEqual(details["document_type"], "technical_report")
+        self.assertNotIn("confidence", details)
 
     def test_office_lock_file_is_never_accepted(self):
         lock_path = self.root / "~$report.docx"

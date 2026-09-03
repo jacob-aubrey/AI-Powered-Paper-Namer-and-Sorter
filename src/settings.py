@@ -18,13 +18,21 @@ class AppSettings:
     filename_format: str = "smart"
     custom_filename_template: str = ""
     watch_and_launch_enabled: bool = False
+    # Smart metadata lookup sends a discovered DOI (not document text) to a
+    # scholarly metadata service. It is on by default because it is the most
+    # reliable way to name ordinary published papers without requiring AI.
+    online_metadata_lookup_enabled: bool = True
     allow_cloud_ai_for_word_documents: bool = False
+    allow_cloud_ai_for_presentation_documents: bool = False
 
     def is_complete(self) -> bool:
         return bool(self.watch_folder and self.sorted_folder)
 
     def clean_naming_mode(self) -> str:
-        return self.naming_mode if self.naming_mode in {"Automatic", "AI", "Basic"} else "Automatic"
+        # "AI" was an older, AI-first label. Smart lookup now uses DOI metadata
+        # first and only uses AI as a backup, so preserve old saved settings by
+        # migrating that value to the recommended Automatic mode.
+        return "Basic" if self.naming_mode == "Basic" else "Automatic"
 
     def clean_filename_format(self) -> str:
         valid_formats = {
@@ -184,7 +192,11 @@ class SettingsManager:
                     filename_format=str(data.get("filename_format", "smart")),
                     custom_filename_template=str(data.get("custom_filename_template", "")),
                     watch_and_launch_enabled=_as_bool(data.get("watch_and_launch_enabled", False)),
+                    online_metadata_lookup_enabled=_as_bool(data.get("online_metadata_lookup_enabled", True), True),
                     allow_cloud_ai_for_word_documents=_as_bool(data.get("allow_cloud_ai_for_word_documents", False)),
+                    allow_cloud_ai_for_presentation_documents=_as_bool(
+                        data.get("allow_cloud_ai_for_presentation_documents", False)
+                    ),
                 )
             except (OSError, json.JSONDecodeError, TypeError, ValueError):
                 continue
@@ -216,7 +228,11 @@ class SettingsManager:
             "filename_format": settings.clean_filename_format(),
             "custom_filename_template": str(settings.custom_filename_template or ""),
             "watch_and_launch_enabled": _as_bool(settings.watch_and_launch_enabled),
+            "online_metadata_lookup_enabled": _as_bool(settings.online_metadata_lookup_enabled, True),
             "allow_cloud_ai_for_word_documents": _as_bool(settings.allow_cloud_ai_for_word_documents),
+            "allow_cloud_ai_for_presentation_documents": _as_bool(
+                settings.allow_cloud_ai_for_presentation_documents
+            ),
         }
         if settings.api_key:
             if os.name == "nt":

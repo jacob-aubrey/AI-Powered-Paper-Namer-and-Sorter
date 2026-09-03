@@ -1,6 +1,28 @@
 # Changelog
 
-## 1.1.1 — Unreleased
+## 1.2.0 — 2026-09-03
+
+### Added
+
+- Smart metadata lookup: the app now checks a DOI found inside a document against an exact Crossref or DataCite record before using Gemini as a backup.
+- Support for modern PowerPoint (`.pptx`) files throughout adding, watching, sorting, and rename-in-place flows, with local slide-text/core-property extraction.
+- Cautious legacy PowerPoint (`.ppt`) support: files can be moved and renamed but clearly request manual review because the old binary format is not safely parsed.
+- An optional PowerPoint AI-analysis setting, directly below the existing Word setting.
+- Supporting-information detection and a single `_SI` filename marker, including DOI-linked parent-paper naming when a verified relationship is available.
+- Separate saved control for online DOI/citation lookup; Smart lookup enables it by default, while Local-only privacy mode disables all online lookup and AI.
+
+### Changed
+
+- Replaced AI self-reported confidence percentages with clear evidence labels such as “Verified by DOI metadata” and specific review reasons only when something is missing, conflicting, or uncertain.
+- Moved **Clear Display** directly beside the **Activity Log** heading. It still clears only the visible log, never `paper_sorter_log.txt`.
+- Updated the README, quick setup guide, and example settings for DOI-first naming, privacy choices, PowerPoint files, and supporting information.
+
+### Fixed
+
+- Explicitly disabled Gemini automatic function calling for the sorter’s text-only request, removing the confusing AFC warning from normal logs.
+- A failed or mismatched DOI lookup now falls back safely without interrupting sorting or adopting metadata from a cited reference.
+
+## 1.1.1 — 2026-09-03
 
 ### Fixed
 

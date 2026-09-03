@@ -36,10 +36,16 @@ from settings import AppSettings, SettingsManager
 
 
 DOCUMENT_FILE_TYPES = [
-    ("Supported documents", "*.pdf *.docx"),
+    ("Supported documents", "*.pdf *.docx *.ppt *.pptx"),
     ("PDF documents", "*.pdf"),
     ("Word documents", "*.docx"),
+    ("PowerPoint presentations", "*.ppt *.pptx"),
 ]
+NAMING_MODE_LABELS = {
+    "Automatic": "Smart metadata lookup (recommended)",
+    "Basic": "Local-only privacy mode",
+}
+NAMING_MODE_IDS = {label: identifier for identifier, label in NAMING_MODE_LABELS.items()}
 FILENAME_STYLE_LABELS = {
     "smart": "Smart (recommended)",
     "journal_compact": "Compact journal citation",
@@ -358,29 +364,43 @@ class FilenameEditorDialog(ctk.CTkToplevel):
         ctk.CTkLabel(info_frame, text="Detected Title:", font=ctk.CTkFont(weight="bold")).grid(row=1, column=0, sticky="nw", pady=(5, 0))
         ctk.CTkLabel(info_frame, text=details.get("title", "Unknown Title"), wraplength=510, justify="left").grid(row=1, column=1, sticky="w", padx=5, pady=(5, 0))
         ctk.CTkLabel(info_frame, text="Document Type:", font=ctk.CTkFont(weight="bold")).grid(row=2, column=0, sticky="nw", pady=(5, 0))
-        confidence = details.get("confidence", 0.0)
-        try:
-            confidence_text = f"{float(confidence):.0%} confidence"
-        except (TypeError, ValueError):
-            confidence_text = "confidence unknown"
         ctk.CTkLabel(
             info_frame,
-            text=f"{details.get('document_type_label', 'Unknown Document Type')} ({confidence_text})",
+            text=details.get("document_type_label", "Unknown Document Type"),
             wraplength=510,
             justify="left",
         ).grid(row=2, column=1, sticky="w", padx=5, pady=(5, 0))
-        warnings = details.get("warnings") or []
-        if details.get("needs_review") or warnings:
-            review_message = "Review recommended."
-            if warnings:
-                review_message = f"Review recommended: {warnings[0]}"
+        evidence_label = details.get("evidence_label", "Suggested from local document information")
+        ctk.CTkLabel(info_frame, text="How this was identified:", font=ctk.CTkFont(weight="bold")).grid(
+            row=3, column=0, sticky="nw", pady=(5, 0)
+        )
+        ctk.CTkLabel(
+            info_frame,
+            text=evidence_label,
+            wraplength=510,
+            justify="left",
+        ).grid(row=3, column=1, sticky="w", padx=5, pady=(5, 0))
+        evidence_detail = details.get("evidence_detail", "")
+        if evidence_detail:
+            ctk.CTkLabel(
+                info_frame,
+                text=evidence_detail,
+                text_color=("gray35", "gray70"),
+                wraplength=590,
+                justify="left",
+            ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        review_reasons = details.get("review_reasons") or []
+        if details.get("needs_review") or review_reasons:
+            review_message = "Please check this suggested name before continuing."
+            if review_reasons:
+                review_message = f"Please check this suggested name: {review_reasons[0]}"
             ctk.CTkLabel(
                 info_frame,
                 text=review_message,
                 text_color="#f6c344",
                 wraplength=590,
                 justify="left",
-            ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(10, 0))
+            ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(10, 0))
 
         # Entry Frame
         entry_frame = ctk.CTkFrame(self)
@@ -443,20 +463,24 @@ class SettingsDialog(ctk.CTkToplevel):
         self.watch_var = ctk.StringVar(value=str(settings.watch_folder or ""))
         self.sorted_var = ctk.StringVar(value=str(settings.sorted_folder or ""))
         self.api_key_var = ctk.StringVar(value=settings.api_key or "")
-        self.naming_mode_var = ctk.StringVar(value=settings.clean_naming_mode())
+        self.naming_mode_var = ctk.StringVar(value=NAMING_MODE_LABELS[settings.clean_naming_mode()])
         filename_format = settings.clean_filename_format()
         self.filename_format_var = ctk.StringVar(value=FILENAME_STYLE_LABELS[filename_format])
         self.custom_filename_template_var = ctk.StringVar(
             value=settings.custom_filename_template or DEFAULT_CUSTOM_FILENAME_TEMPLATE
         )
         self.watch_launch_var = ctk.BooleanVar(value=settings.watch_and_launch_enabled)
+        self.online_metadata_lookup_var = ctk.BooleanVar(value=settings.online_metadata_lookup_enabled)
         self.allow_cloud_ai_word_var = ctk.BooleanVar(value=settings.allow_cloud_ai_for_word_documents)
+        self.allow_cloud_ai_presentation_var = ctk.BooleanVar(
+            value=settings.allow_cloud_ai_for_presentation_documents
+        )
 
         ctk.CTkLabel(frame, text="To Sort folder").grid(row=0, column=0, padx=10, pady=(14, 6), sticky="w")
         ctk.CTkEntry(frame, textvariable=self.watch_var).grid(row=0, column=1, padx=10, pady=(14, 6), sticky="ew")
         self.watch_browse_button = ctk.CTkButton(frame, text="Browse", width=90, command=self._browse_watch)
         self.watch_browse_button.grid(row=0, column=2, padx=10, pady=(14, 6))
-        add_tooltip(self.watch_browse_button, "Choose the incoming folder the app watches and copies supported PDFs and Word documents into.")
+        add_tooltip(self.watch_browse_button, "Choose the incoming folder the app watches for supported PDFs, Word documents, and PowerPoint presentations.")
 
         ctk.CTkLabel(frame, text="Sorted papers root").grid(row=1, column=0, padx=10, pady=6, sticky="w")
         ctk.CTkEntry(frame, textvariable=self.sorted_var).grid(row=1, column=1, padx=10, pady=6, sticky="ew")
@@ -464,65 +488,106 @@ class SettingsDialog(ctk.CTkToplevel):
         self.sorted_browse_button.grid(row=1, column=2, padx=10, pady=6)
         add_tooltip(self.sorted_browse_button, "Choose the root folder where sorted and renamed papers are stored.")
 
-        ctk.CTkLabel(frame, text="Naming mode").grid(row=2, column=0, padx=10, pady=6, sticky="w")
-        self.naming_mode_menu = ctk.CTkOptionMenu(frame, variable=self.naming_mode_var, values=["Automatic", "AI", "Basic"])
+        ctk.CTkLabel(frame, text="How should documents be identified?").grid(row=2, column=0, padx=10, pady=6, sticky="w")
+        self.naming_mode_menu = ctk.CTkOptionMenu(
+            frame,
+            variable=self.naming_mode_var,
+            values=list(NAMING_MODE_LABELS.values()),
+            command=lambda _value: self._update_identification_controls(),
+        )
         self.naming_mode_menu.grid(row=2, column=1, padx=10, pady=6, sticky="w")
-        add_tooltip(self.naming_mode_menu, "Automatic uses AI when a key exists, otherwise Basic naming.")
+        add_tooltip(
+            self.naming_mode_menu,
+            "Smart metadata lookup checks an exact DOI first and uses AI only as a backup. "
+            "Local-only privacy mode never uses online lookup or AI.",
+        )
 
-        ctk.CTkLabel(frame, text="Gemini API key").grid(row=3, column=0, padx=10, pady=6, sticky="w")
+        self.online_metadata_check = ctk.CTkCheckBox(
+            frame,
+            text="Use online DOI/citation lookup (recommended)",
+            variable=self.online_metadata_lookup_var,
+        )
+        self.online_metadata_check.grid(row=3, column=1, padx=10, pady=(2, 4), sticky="w")
+        add_tooltip(
+            self.online_metadata_check,
+            "When a DOI is found, the app sends that DOI—not the document text—to a scholarly metadata service. "
+            "Local-only privacy mode always skips this lookup.",
+        )
+        self.identification_note = ctk.CTkLabel(
+            frame,
+            text="A DOI lookup sends an identifier, not your paper or slide text.",
+            justify="left",
+            wraplength=620,
+            text_color=("gray35", "gray70"),
+        )
+        self.identification_note.grid(row=4, column=1, columnspan=2, padx=10, pady=(0, 4), sticky="w")
+
+        ctk.CTkLabel(frame, text="Gemini API key").grid(row=5, column=0, padx=10, pady=6, sticky="w")
         self.api_key_entry = ctk.CTkEntry(frame, textvariable=self.api_key_var, show="*")
-        self.api_key_entry.grid(row=3, column=1, padx=10, pady=6, sticky="ew")
-        add_tooltip(self.api_key_entry, "Optional. Add a Gemini key to enable AI naming on this PC.")
+        self.api_key_entry.grid(row=5, column=1, padx=10, pady=6, sticky="ew")
+        add_tooltip(self.api_key_entry, "Optional. Smart metadata lookup can still use a DOI without a Gemini key; a key enables AI backup.")
         self.api_help_button = ctk.CTkButton(frame, text="Get Key", width=90, command=self._show_api_help)
-        self.api_help_button.grid(row=3, column=2, padx=10, pady=6)
-        add_tooltip(self.api_help_button, "Show concise setup instructions for Gemini AI naming.")
+        self.api_help_button.grid(row=5, column=2, padx=10, pady=6)
+        add_tooltip(self.api_help_button, "Show concise setup instructions for optional Gemini backup analysis.")
 
-        ctk.CTkLabel(frame, text="Filename style").grid(row=4, column=0, padx=10, pady=(14, 6), sticky="w")
+        ctk.CTkLabel(frame, text="Filename style").grid(row=6, column=0, padx=10, pady=(14, 6), sticky="w")
         self.filename_style_menu = ctk.CTkOptionMenu(
             frame,
             variable=self.filename_format_var,
             values=list(FILENAME_STYLE_LABELS.values()),
             command=lambda _value: self._update_filename_style_controls(),
         )
-        self.filename_style_menu.grid(row=4, column=1, padx=10, pady=(14, 6), sticky="w")
+        self.filename_style_menu.grid(row=6, column=1, padx=10, pady=(14, 6), sticky="w")
         add_tooltip(
             self.filename_style_menu,
             "Choose how verified metadata is arranged in the proposed filename. This does not change AI/privacy mode.",
         )
 
-        ctk.CTkLabel(frame, text="Custom template").grid(row=5, column=0, padx=10, pady=6, sticky="nw")
+        ctk.CTkLabel(frame, text="Custom template").grid(row=7, column=0, padx=10, pady=6, sticky="nw")
         self.custom_filename_template_entry = ctk.CTkEntry(
             frame,
             textvariable=self.custom_filename_template_var,
         )
-        self.custom_filename_template_entry.grid(row=5, column=1, columnspan=2, padx=10, pady=6, sticky="ew")
+        self.custom_filename_template_entry.grid(row=7, column=1, columnspan=2, padx=10, pady=6, sticky="ew")
         add_tooltip(
             self.custom_filename_template_entry,
-            "Available only for Custom template. The original PDF or DOCX extension is always retained automatically.",
+            "Available only for Custom template. The original PDF, Word, or PowerPoint extension is always retained automatically.",
         )
         self.filename_style_preview = ctk.CTkLabel(frame, text="", justify="left", wraplength=650)
-        self.filename_style_preview.grid(row=6, column=0, columnspan=3, padx=10, pady=(2, 10), sticky="w")
+        self.filename_style_preview.grid(row=8, column=0, columnspan=3, padx=10, pady=(2, 10), sticky="w")
         ctk.CTkLabel(
             frame,
             text=(
                 "Custom tokens: {author_last}, {author_last_et_al}, {first_author_full}, {journal}, "
                 "{journal_abbreviation}, {venue_or_publisher}, {volume}, {issue}, {year}, {title}, {document_type}. "
-                "Unavailable fields are omitted; the original .pdf or .docx extension is always retained."
+                "Unavailable fields are omitted; the original .pdf, .docx, .ppt, or .pptx extension is always retained."
             ),
             justify="left",
             wraplength=650,
             text_color=("gray35", "gray70"),
-        ).grid(row=7, column=0, columnspan=3, padx=10, pady=(0, 10), sticky="w")
+        ).grid(row=9, column=0, columnspan=3, padx=10, pady=(0, 10), sticky="w")
 
         self.word_ai_check = ctk.CTkCheckBox(
             frame,
             text="Allow AI analysis of Word documents (.docx)",
             variable=self.allow_cloud_ai_word_var,
         )
-        self.word_ai_check.grid(row=8, column=1, padx=10, pady=(8, 4), sticky="w")
+        self.word_ai_check.grid(row=10, column=1, padx=10, pady=(8, 4), sticky="w")
         add_tooltip(
             self.word_ai_check,
             "Off by default. Enable only if you want the app to send extracted Word-document text to Gemini for AI naming.",
+        )
+
+        self.presentation_ai_check = ctk.CTkCheckBox(
+            frame,
+            text="Allow AI analysis of PowerPoint presentations (.pptx)",
+            variable=self.allow_cloud_ai_presentation_var,
+        )
+        self.presentation_ai_check.grid(row=11, column=1, padx=10, pady=(4, 4), sticky="w")
+        add_tooltip(
+            self.presentation_ai_check,
+            "Off by default. Enable only if you want the app to send extracted PowerPoint slide text to Gemini for AI backup naming. "
+            "Older .ppt files are never sent because they cannot be safely read automatically.",
         )
 
         self.watch_launch_check = ctk.CTkCheckBox(
@@ -531,7 +596,7 @@ class SettingsDialog(ctk.CTkToplevel):
             variable=self.watch_launch_var,
             command=self._on_watch_launch_toggle,
         )
-        self.watch_launch_check.grid(row=9, column=1, padx=10, pady=(4, 12), sticky="w")
+        self.watch_launch_check.grid(row=12, column=1, padx=10, pady=(4, 12), sticky="w")
         add_tooltip(self.watch_launch_check, "Run the lightweight watcher in the background so supported files added later can open the sorter app.")
 
         button_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -544,6 +609,7 @@ class SettingsDialog(ctk.CTkToplevel):
         self.save_button.grid(row=0, column=1, padx=6, sticky="ew")
         add_tooltip(self.save_button, "Save these folder choices for this PC and restart folder watching.")
         self.custom_filename_template_var.trace_add("write", lambda *_args: self._update_filename_style_controls())
+        self._update_identification_controls()
         self._update_filename_style_controls()
         self.after_idle(lambda: center_window_over_master(self, self.main_window, min_width=700, min_height=560))
 
@@ -552,6 +618,23 @@ class SettingsDialog(ctk.CTkToplevel):
 
     def _selected_filename_format(self):
         return FILENAME_STYLE_IDS.get(self.filename_format_var.get(), "smart")
+
+    def _selected_naming_mode(self):
+        return NAMING_MODE_IDS.get(self.naming_mode_var.get(), "Automatic")
+
+    def _update_identification_controls(self):
+        local_only = self._selected_naming_mode() == "Basic"
+        state = "disabled" if local_only else "normal"
+        self.online_metadata_check.configure(state=state)
+        self.word_ai_check.configure(state=state)
+        self.presentation_ai_check.configure(state=state)
+        self.identification_note.configure(
+            text=(
+                "Local-only privacy mode never sends document information online."
+                if local_only
+                else "A DOI lookup sends an identifier, not your paper or slide text."
+            )
+        )
 
     def _update_filename_style_controls(self):
         filename_format = self._selected_filename_format()
@@ -643,11 +726,13 @@ class SettingsDialog(ctk.CTkToplevel):
             watch_folder=watch_path,
             sorted_folder=sorted_path,
             api_key=self.api_key_var.get().strip(),
-            naming_mode=self.naming_mode_var.get(),
+            naming_mode=self._selected_naming_mode(),
             filename_format=filename_format,
             custom_filename_template=custom_template,
             watch_and_launch_enabled=self.watch_launch_var.get(),
+            online_metadata_lookup_enabled=self.online_metadata_lookup_var.get(),
             allow_cloud_ai_for_word_documents=self.allow_cloud_ai_word_var.get(),
+            allow_cloud_ai_for_presentation_documents=self.allow_cloud_ai_presentation_var.get(),
         )
         self.destroy()
 
@@ -663,10 +748,11 @@ class SettingsDialog(ctk.CTkToplevel):
                 "AI naming is optional.\n\n"
                 "1. Create a Gemini API key in Google AI Studio.\n"
                 "2. Paste it into the Gemini API key field.\n"
-                "3. Set Naming mode to Automatic or AI.\n\n"
-                "Basic naming stays on this PC. AI mode sends an extracted text excerpt to Gemini. "
-                "Word-document AI analysis stays off unless you check its separate opt-in.\n\n"
-                "Without a key, Basic naming still works."
+                "3. Keep Smart metadata lookup selected.\n\n"
+                "Smart lookup checks a DOI first and only uses Gemini as a backup when needed. "
+                "A DOI lookup sends the DOI, not the document text. Word and PowerPoint AI analysis stay off "
+                "unless you check their separate opt-ins.\n\n"
+                "Without a key, Smart lookup can still use DOI metadata and local document information."
             ),
             icon="info",
         )
@@ -929,7 +1015,7 @@ class App:
             command=self.rename_papers_flow,
         )
         self.btn_name_papers.pack(side="left", padx=4)
-        add_tooltip(self.btn_name_papers, "Rename PDFs or Word documents in place without moving them into a sorted folder.")
+        add_tooltip(self.btn_name_papers, "Rename supported PDFs, Word documents, or PowerPoint presentations in place without moving them into a sorted folder.")
         self.btn_refresh = ctk.CTkButton(
             self.toolbar_buttons,
             text="Refresh",
@@ -960,17 +1046,6 @@ class App:
         )
         self.btn_view_log.pack(side="left", padx=4)
         add_tooltip(self.btn_view_log, "Open the text log that records app actions and moved papers.")
-        self.btn_clear_log_display = ctk.CTkButton(
-            self.toolbar_buttons,
-            text="Clear Display",
-            width=118,
-            command=self.clear_log_display,
-        )
-        self.btn_clear_log_display.pack(side="left", padx=4)
-        add_tooltip(
-            self.btn_clear_log_display,
-            "Clear only the on-screen log display. The paper_sorter_log.txt file is not changed.",
-        )
         self.settings_button = ctk.CTkButton(
             self.toolbar_buttons,
             text="Settings",
@@ -992,14 +1067,34 @@ class App:
         self.drag_label = ctk.CTkLabel(self.browse_text_frame, text="To sort documents, drag them here, or ", font=ctk.CTkFont(size=14)); self.drag_label.pack(side="left")
         self.browse_label = ctk.CTkLabel(self.browse_text_frame, text="browse", font=ctk.CTkFont(size=14, underline=True), text_color=("blue", "cyan"), cursor="hand2")
         self.browse_label.pack(side="left"); self.browse_label.bind("<Button-1>", lambda e: self.select_and_add_papers())
-        add_tooltip(self.browse_label, "Select one or more PDF or Word (.docx) files to copy into the To Sort folder.")
+        add_tooltip(self.browse_label, "Select PDF, Word (.docx), or PowerPoint (.pptx or .ppt) files to copy into the To Sort folder.")
         self.after_browse_label = ctk.CTkLabel(self.browse_text_frame, text=" your computer...", font=ctk.CTkFont(size=14)); self.after_browse_label.pack(side="left")
         
         self.bottom_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
         self.bottom_frame.grid(row=2, column=0, padx=10, pady=(0, 10), sticky="nsew")
-        self.bottom_frame.grid_columnconfigure(0, weight=1); self.bottom_frame.grid_rowconfigure(0, weight=1)
+        self.bottom_frame.grid_columnconfigure(0, weight=1)
+        self.bottom_frame.grid_rowconfigure(0, weight=0)
+        self.bottom_frame.grid_rowconfigure(1, weight=1)
+
+        self.log_header_frame = ctk.CTkFrame(self.bottom_frame, fg_color="transparent")
+        self.log_header_frame.grid(row=0, column=0, pady=(0, 4), sticky="ew")
+        self.log_header_frame.grid_columnconfigure(0, weight=1)
+        self.log_title = ctk.CTkLabel(self.log_header_frame, text="Activity Log", font=ctk.CTkFont(weight="bold"))
+        self.log_title.grid(row=0, column=0, padx=(2, 0), sticky="w")
+        self.btn_clear_log_display = ctk.CTkButton(
+            self.log_header_frame,
+            text="Clear Display",
+            width=118,
+            command=self.clear_log_display,
+        )
+        self.btn_clear_log_display.grid(row=0, column=1, sticky="e")
+        add_tooltip(
+            self.btn_clear_log_display,
+            "Clear only the on-screen Activity Log. The paper_sorter_log.txt file is not changed.",
+        )
         
-        self.log_textbox = ctk.CTkTextbox(self.bottom_frame, activate_scrollbars=True); self.log_textbox.grid(row=0, column=0, padx=0, pady=(0, 10), sticky="nsew")
+        self.log_textbox = ctk.CTkTextbox(self.bottom_frame, activate_scrollbars=True)
+        self.log_textbox.grid(row=1, column=0, padx=0, pady=(0, 10), sticky="nsew")
         self.redirector = TextboxRedirector(
             self.log_textbox,
             resolve_document_path=self._resolve_logged_document_path,
@@ -1414,23 +1509,37 @@ class App:
     def _get_details_for_document(self, document_path: Path):
         mode = self.settings.clean_naming_mode() if self.settings else "Automatic"
         api_key = self._active_api_key()
-        if mode == "Basic" or not api_key:
-            if mode == "AI" and not api_key:
-                logging.warning("AI naming was selected, but no Gemini API key is set. Using Basic naming instead.")
+        if mode == "Basic":
             return get_basic_document_details(document_path)
 
-        allow_cloud_ai_for_word = bool(self.settings and self.settings.allow_cloud_ai_for_word_documents)
-        if document_path.suffix.lower() == ".docx" and not allow_cloud_ai_for_word:
+        suffix = document_path.suffix.lower()
+        allow_cloud_ai = suffix == ".pdf"
+        if suffix == ".docx":
+            allow_cloud_ai = bool(self.settings and self.settings.allow_cloud_ai_for_word_documents)
+        elif suffix == ".pptx":
+            allow_cloud_ai = bool(self.settings and self.settings.allow_cloud_ai_for_presentation_documents)
+        elif suffix == ".ppt":
+            allow_cloud_ai = False
+        if suffix == ".docx" and not allow_cloud_ai:
             logging.info(
-                "Using Basic naming for %s because AI analysis of Word documents is off in Settings.",
+                "Word AI backup is off for %s; Smart lookup can still use a locally found DOI.",
                 document_path.name,
             )
-            return get_basic_document_details(document_path)
+        elif suffix == ".pptx" and not allow_cloud_ai:
+            logging.info(
+                "PowerPoint AI backup is off for %s; Smart lookup can still use a locally found DOI.",
+                document_path.name,
+            )
 
-        details = get_document_details(document_path, api_key, allow_cloud_ai=allow_cloud_ai_for_word)
+        details = get_document_details(
+            document_path,
+            api_key,
+            allow_cloud_ai=allow_cloud_ai,
+            allow_online_metadata_lookup=(self.settings.online_metadata_lookup_enabled if self.settings else True),
+        )
         if details:
             return details
-        logging.warning(f"AI naming failed for {document_path.name}. Using Basic naming instead.")
+        logging.warning(f"Smart metadata lookup could not finish for {document_path.name}. Using a local suggestion instead.")
         return get_basic_document_details(document_path)
 
     def _proposed_filename(self, details: dict, document_path: Path) -> str:
@@ -1593,7 +1702,7 @@ class App:
             return
         choice_dialog = self._messagebox(
             title="Rename Documents",
-            message="Would you like to select a folder or individual PDF/Word files?",
+            message="Would you like to select a folder or individual supported documents?",
             icon="question",
             option_1="Folder",
             option_2="Files",
@@ -1629,7 +1738,7 @@ class App:
         self._normalize_root()
         if not document_files:
             logging.info("No supported documents found for renaming.")
-            self._messagebox(title="No Documents", message="No supported PDF or Word documents were found.")
+            self._messagebox(title="No Documents", message="No supported PDF, Word, or PowerPoint documents were found.")
             return
         self.rename_batch_total = len(document_files)
         self.rename_batch_done = 0
