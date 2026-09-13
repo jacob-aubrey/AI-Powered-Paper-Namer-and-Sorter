@@ -190,12 +190,9 @@ class TextboxRedirector:
             return
         try:
             if os.name == "nt":
-                # Explorer reliably opens a folder and highlights the paper when
-                # it still exists. If the paper was later removed, the folder is
-                # still useful and is opened normally.
-                explorer_arguments = ["explorer.exe"]
-                explorer_arguments.append(f"/select,{resolved_path}" if resolved_path else str(folder_path))
-                subprocess.Popen(explorer_arguments, shell=False)
+                # Open the folder through the Windows shell. Explorer's /select
+                # command-line parsing can fail for paths containing spaces.
+                os.startfile(str(folder_path.resolve()), "open")
             else:
                 webbrowser.open(folder_path.resolve().as_uri())
         except (OSError, subprocess.SubprocessError) as error:

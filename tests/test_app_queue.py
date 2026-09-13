@@ -221,18 +221,26 @@ class LogDisplayTests(unittest.TestCase):
             self.assertEqual(result, "break")
             startfile.assert_called_once_with(str(document_path), "open")
 
-    def test_log_location_link_uses_explorer_and_highlights_existing_document(self):
+    def test_log_location_link_opens_containing_folder(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
-            document_path = Path(temporary_directory) / "report.pdf"
+            folder = Path(temporary_directory) / "O'Connor papers, reviewed"
+            folder.mkdir()
+            document_path = folder / "report with spaces.pdf"
             document_path.write_bytes(b"placeholder")
             redirector = TextboxRedirector(_FakeTextbox())
 
-            with patch("app.subprocess.Popen") as popen:
+            with patch("app.os.startfile") as startfile:
                 redirector._open_location(document_path)
 
-            popen.assert_called_once_with(
-                ["explorer.exe", f"/select,{document_path}"], shell=False
-            )
+            startfile.assert_called_once_with(str(folder.resolve()), "open")
+
+    def test_location_link_opens_folder_when_document_is_removed(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            folder = Path(temporary_directory)
+            redirector = TextboxRedirector(_FakeTextbox())
+            with patch("app.os.startfile") as startfile:
+                redirector._open_location(folder / "removed.pdf")
+            startfile.assert_called_once_with(str(folder.resolve()), "open")
 
     def test_stale_log_link_uses_one_safe_matching_document(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

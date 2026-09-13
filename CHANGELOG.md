@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.2.1 — 2026-09-13
+
+### Fixed
+
+- **View Location** now opens the containing folder directly through Windows instead of passing a file-selection argument to Explorer.
+- The containing folder remains accessible when the original document has been removed.
+
 ## 1.2.0 — 2026-09-03
 
 ### Added
