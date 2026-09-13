@@ -17,15 +17,17 @@ Supported inputs are `.pdf`, `.docx`, `.pptx`, and legacy `.ppt` files. The app 
 
 1. Download the latest Windows release from the [Releases page](https://github.com/jacob-aubrey/AI-Powered-Paper-Namer-and-Sorter/releases).
 2. Extract the whole ZIP to a permanent location, such as `Documents\AI Paper Sorter`. Do not run it from inside the ZIP.
-3. If the release contains an `_internal` folder, keep it next to the executable. Do not distribute or copy only the `.exe`.
+3. Keep the `_internal` folder next to the executable. Version 1.3 and later use these nearby runtime files to open faster. Do not distribute or copy only the `.exe`.
 4. Open **AI Paper Sorter**. On first use, open **Settings** and choose:
-   - **To Sort folder** — a staging folder for incoming PDFs, Word documents, and PowerPoint presentations.
-   - **Sorted papers root** — the top-level folder that will hold your organized library.
+   - **Watch folder** — a staging folder for incoming PDFs, Word documents, and PowerPoint presentations.
+   - **Library folder** — the top-level folder that will hold your organized library.
 5. Keep those folders separate. The app will refuse folders that are the same or nested inside each other, which prevents accidental watch loops.
 6. Leave **Naming mode** on **Smart metadata lookup (recommended)**. It starts with information already inside the document, checks an exact DOI when one is found, and uses Gemini only as a backup when you have added your own key. Choose **Local-only privacy mode** if you never want online lookup or Gemini assistance.
 7. Drag documents onto the app or click **browse**. Review the suggested filename, choose a destination folder, and click **Confirm**.
 
-When you add a document through the app, it first copies the original into the To Sort folder; your original stays where it was. If you manually place a file in the To Sort folder, that copy is the one that will be moved after you approve it.
+**Watch folder** and **Library folder** are roles, not required folder names. For example, you can watch `Downloads\Papers` and choose `Research Library` as the library root, with category subfolders such as `Imaging` and `Methods`. Existing folder names and contents stay as they are.
+
+When you add a document through the app, it first copies the original into the Watch folder; your original stays where it was. If you manually place a file in the Watch folder, that copy is the one that will be moved after you approve it.
 
 Windows may show a SmartScreen message because personal builds are not code-signed. Only choose **More info → Run anyway** after you have confirmed the file came from a person or release you trust.
 
@@ -120,22 +122,24 @@ Close and reopen the app after running that command. A key entered in Settings t
 
 There are two related features:
 
-- **In-app watching** runs while AI Paper Sorter is open. It notices supported files placed directly in the To Sort folder and queues them for review.
+- **In-app watching** runs while AI Paper Sorter is open. It notices supported files placed directly in the Watch folder and queues them for review.
 - **Watch & Launch** is the optional background helper controlled by **Settings → Enable Watch & Launch at Windows login/unlock**. When enabled, Windows starts a lightweight watcher at sign-in and unlock; it opens the app when a supported file appears while the main window is closed.
+
+The helper opens the window as soon as a supported document appears; the app still waits for the download or copy to settle before reading it. Metadata lookup can take longer than window startup. Opening an upgraded version refreshes the enabled helper registration to that app location.
 
 Watch & Launch is **off by default**. Turn the checkbox off and save to remove its scheduled task/startup fallback and stop this app’s helper. The checkbox does not control normal in-app watching.
 
-The watched folder is the **To Sort folder** in Settings. You can change it at any time; the app restarts its in-app watcher after a successful save. Watching is direct-folder only, not recursive through subfolders. Temporary Office files whose name starts with `~$` are ignored.
+The watched folder is the **Watch folder** in Settings. You can change it at any time; the app restarts its in-app watcher after a successful save. Watching is direct-folder only, not recursive through subfolders. Temporary Office files whose name starts with `~$` are ignored.
 
 ## Daily use
 
 ### Sort incoming material
 
-1. Add a PDF, `.docx`, `.pptx`, or `.ppt` file by drag-and-drop, **browse**, or by placing it in the To Sort folder.
+1. Add a PDF, `.docx`, `.pptx`, or `.ppt` file by drag-and-drop, **browse**, or by placing it in the Watch folder.
 2. Wait for the file to finish copying. The app coalesces Windows file-system events, so one copied document becomes one review action.
 3. Check the document title/type and any review warning.
 4. Edit or accept the proposed filename.
-5. Pick a destination under your Sorted papers root and confirm the move.
+5. Pick a destination under your Library folder and confirm the move.
 
 ### Rename files without moving them
 
@@ -143,7 +147,7 @@ Click **Name Papers**, then choose a folder or individual supported files. This 
 
 ### Find the log
 
-Click **Log** in the app, or open `paper_sorter_log.txt` in the Sorted papers root. Moved-file entries include clickable links to the destination folder and file. The on-screen log is read-only; **Clear Display** removes only what is currently shown and never deletes the log file. The log is useful because there is no automatic undo feature yet.
+Click **Log** in the app, or open `paper_sorter_log.txt` in the Library folder. Moved-file entries include clickable links to the destination folder and file. The on-screen log is read-only; **Clear Display** removes only what is currently shown and never deletes the log file. The log is useful because there is no automatic undo feature yet.
 
 ## Troubleshooting
 
@@ -152,7 +156,7 @@ Click **Log** in the app, or open `paper_sorter_log.txt` in the Sorted papers ro
 | The app will not start | Extract the complete release ZIP. If it includes `_internal`, it must remain beside the executable. |
 | Windows SmartScreen blocks it | Verify the source first. Then use **More info → Run anyway** only if you trust the download. |
 | The app asks for folders | Open **Settings**, choose both separate folders, and click **Save**. |
-| A file is not detected | Confirm it is a `.pdf`, `.docx`, `.pptx`, or `.ppt`, is placed directly in the To Sort folder, and is not an Office `~$` temporary file. Use **Refresh** to scan the folder again. |
+| A file is not detected | Confirm it is a `.pdf`, `.docx`, `.pptx`, or `.ppt`, is placed directly in the Watch folder, and is not an Office `~$` temporary file. Use **Refresh** to scan the folder again. |
 | A scan has a bad title or no metadata | The PDF may be image-only. Run OCR or enter a name manually. |
 | Gemini backup is unavailable | Confirm your own key, internet access, Google AI Studio quota/billing, and try Local-only privacy mode. The file can still be sorted manually. |
 | Watch & Launch does not wake the app | Open Settings, turn the checkbox off and save, then turn it back on and save. Keep the installed app in a permanent location. |
@@ -186,6 +190,8 @@ Build a Windows package with:
 pyinstaller --noconfirm "AI Paper Sorter.spec"
 ```
 
+The runnable folder is `dist/AI Paper Sorter/`; package that complete folder, including `_internal`.
+
 Share only the fresh, versioned build you produced—not an old mixture of files from `dist`. Before publishing a release, scan it for secrets, test it on a different Windows account/PC, create a checksum, and write clear release notes.
 
 ## Project status and contributing
@@ -193,3 +199,7 @@ Share only the fresh, versioned build you produced—not an old mixture of files
 The source repository is [AI-Powered-Paper-Namer-and-Sorter](https://github.com/jacob-aubrey/AI-Powered-Paper-Namer-and-Sorter). It is a real Git repository with `main` tracking `origin/main`.
 
 Before making it broadly public, choose a license and add it to the repository; without one, other people do not automatically have permission to redistribute or modify the code. Please report reproducible issues with the Windows version, input type, naming mode, and a redacted log excerpt—never an API key or confidential document.
+
+### Offline installation check
+
+Run `"AI Paper Sorter.exe" --self-test "self-test.json"` from a terminal in the extracted app folder. It writes a pass/fail report for the UI, document extraction libraries, and offline AI-client initialization using temporary sample files. It does not load your saved folders or send requests.

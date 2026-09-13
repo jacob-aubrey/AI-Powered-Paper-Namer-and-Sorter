@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 import zipfile
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -12,19 +13,23 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from pypdf import PdfReader
+# Load extraction and cloud libraries only when needed, after the UI opens.
+genai = None
+genai_types = None
 
-try:  # Basic/local mode remains usable even when AI support is not installed.
-    from google import genai
-    from google.genai import types as genai_types
-except ImportError:  # pragma: no cover - exercised in a dependency-missing install.
-    genai = None
-    genai_types = None
 
-try:
-    from docx import Document as WordDocument
-except ImportError:  # pragma: no cover - surfaced as a useful application error.
-    WordDocument = None
+def _load_genai() -> bool:
+    global genai, genai_types
+    if genai is not None and genai_types is not None:
+        return True
+    try:
+        from google import genai as sdk
+        from google.genai import types as sdk_types
+    except ImportError:
+        return False
+    genai, genai_types = sdk, sdk_types
+    return True
+
 
 from presentation_extraction import PresentationExtractionError, extract_presentation
 
@@ -115,6 +120,8 @@ MAX_EXTRACTION_CHARS = 24_000
 MAX_AI_TEXT_CHARS = 8_000
 MAX_PDF_PAGES = 5
 MAX_DOI_LOOKUPS_PER_DOCUMENT = 3
+MAX_METADATA_LOOKUP_SECONDS = 12.0
+AI_REQUEST_TIMEOUT_MS = 20_000
 _YEAR_RE = re.compile(r"\b(?:1[5-9]\d{2}|20\d{2}|21\d{2})\b")
 _UNKNOWN_VALUES = {"", "unknown", "n/a", "na", "none", "null", "not available", "not found"}
 _SUPPLEMENTAL_TEXT_RE = re.compile(
@@ -308,11 +315,14 @@ def _title_match_score(first: Any, second: Any) -> float:
     right = _comparable_title(second)
     if not left or not right:
         return 0.0
-    if left == right or left in right or right in left:
+    if left == right:
         return 1.0
     left_words = set(left.split())
     right_words = set(right.split())
-    word_overlap = len(left_words & right_words) / max(1, min(len(left_words), len(right_words)))
+    # A generic one- or two-word title must not verify a longer citation.
+    if min(len(left_words), len(right_words)) < 3:
+        return 0.0
+    word_overlap = len(left_words & right_words) / max(len(left_words), len(right_words))
     return max(word_overlap, SequenceMatcher(None, left, right).ratio())
 
 
@@ -383,6 +393,8 @@ def _supplemental_status(
 def _apply_parent_metadata_for_supplement(
     raw_details: dict[str, Any],
     resolution: DOIResolution,
+    *,
+    deadline: float | None = None,
 ) -> dict[str, Any]:
     """Use a DOI-declared parent citation for a supplemental-file proposal.
 
@@ -394,7 +406,7 @@ def _apply_parent_metadata_for_supplement(
     if not resolution.parent_doi:
         return raw_details
     try:
-        parent = resolve_doi(resolution.parent_doi)
+        parent = resolve_doi(resolution.parent_doi, deadline=deadline)
     except Exception as exc:  # A metadata-service failure must not stop sorting.
         logging.debug("Could not retrieve parent DOI metadata: %s", exc)
         parent = None
@@ -426,9 +438,12 @@ def _doi_details_for_document(
 ) -> dict[str, Any] | None:
     """Return exact, locally validated DOI metadata, if available."""
 
+    deadline = time.monotonic() + MAX_METADATA_LOOKUP_SECONDS
     for doi in _document_doi_candidates(extraction):
+        if time.monotonic() >= deadline:
+            break
         try:
-            resolution = resolve_doi(doi)
+            resolution = resolve_doi(doi, deadline=deadline)
         except Exception as exc:  # Keep a provider outage from interrupting the queue worker.
             logging.debug("DOI lookup failed for %s: %s", path.name, exc)
             continue
@@ -448,7 +463,7 @@ def _doi_details_for_document(
             raw["is_supplementary_material"] = True
             raw["evidence_label"] = "Verified supporting information by DOI metadata"
             raw["evidence_detail"] = "The file's DOI identifies it as supporting information."
-            raw = _apply_parent_metadata_for_supplement(raw, resolution)
+            raw = _apply_parent_metadata_for_supplement(raw, resolution, deadline=deadline)
         return normalize_document_details(raw, path, extraction=extraction, source="DOI")
     return None
 
@@ -501,6 +516,8 @@ def _pdf_metadata(reader: PdfReader) -> dict[str, str]:
 
 
 def _extract_pdf(path: Path) -> DocumentExtraction:
+    from pypdf import PdfReader
+
     try:
         reader = PdfReader(path, strict=False)
     except Exception as exc:
@@ -574,8 +591,10 @@ def _docx_metadata(document: Any) -> dict[str, str]:
 
 def _extract_docx(path: Path) -> DocumentExtraction:
     _validate_docx_package(path)
-    if WordDocument is None:
-        raise DocumentExtractionError("DOCX support is unavailable because python-docx is not installed.")
+    try:
+        from docx import Document as WordDocument
+    except ImportError as exc:
+        raise DocumentExtractionError("DOCX support is unavailable because python-docx is not installed.") from exc
     try:
         document = WordDocument(path)
     except Exception as exc:
@@ -933,11 +952,18 @@ def get_document_details(
             return doi_details
     if path.suffix.lower() == ".ppt" or not allow_cloud_ai or not api_key or not extraction.text:
         return _basic_details_from_extraction(path, extraction)
-    if genai is None or genai_types is None:
+    if not _load_genai():
         logging.error("AI naming is unavailable because the google-genai package is not installed.")
         return _basic_details_from_extraction(path, extraction)
+    client = None
     try:
-        client = genai.Client(api_key=api_key)
+        client = genai.Client(
+            api_key=api_key,
+            http_options=genai_types.HttpOptions(
+                timeout=AI_REQUEST_TIMEOUT_MS,
+                retry_options=genai_types.HttpRetryOptions(attempts=1),
+            ),
+        )
         response = client.models.generate_content(
             model=GEMINI_MODEL,
             contents=_ai_prompt(extraction.text),
@@ -952,6 +978,12 @@ def get_document_details(
     except Exception as exc:
         logging.error("AI processing error for %s: %s", path.name, exc)
         return _basic_details_from_extraction(path, extraction)
+    finally:
+        if client is not None:
+            try:
+                client.close()
+            except Exception:
+                logging.debug("Could not close the AI client.", exc_info=True)
 
 
 def get_paper_details(pdf_path: Path, api_key: str) -> dict[str, Any] | None:
@@ -1143,7 +1175,7 @@ def validate_document_filename(name: str, expected_suffix: str) -> str:
     stem = path.stem
     if stem.strip(" .") == "":
         raise ValueError("Filename must include a name before its extension.")
-    if stem.upper() in WINDOWS_RESERVED_NAMES:
+    if stem.split(".", 1)[0].rstrip(" ").upper() in WINDOWS_RESERVED_NAMES:
         raise ValueError("That filename is reserved by Windows.")
     if stem[-1] in (" ", "."):
         raise ValueError("Filename cannot end with a space or period before its extension.")

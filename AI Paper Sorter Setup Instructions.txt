@@ -5,13 +5,16 @@ For the full guide, troubleshooting, privacy information, and developer instruct
 open README.md. This short file is only a quick first-run checklist.
 
 1. Extract the complete release ZIP before opening the app.
-   If the release includes an _internal folder, keep it next to the executable.
+   Keep the required _internal folder next to the executable.
 
 2. Open AI Paper Sorter and click Settings.
    Choose two separate folders:
-   - To Sort folder: incoming PDF, Word (.docx), and PowerPoint (.pptx or .ppt)
+   - Watch folder: incoming PDF, Word (.docx), and PowerPoint (.pptx or .ppt)
      documents.
-   - Sorted papers root: the library that will receive approved documents.
+   - Library folder: the library that will receive approved documents.
+
+   These are roles, not required folder names. Choose any incoming folder
+   to watch and any library root containing documents and category subfolders.
 
 3. Choose a naming mode.
    - Smart metadata lookup (recommended): starts with information inside the file. When it finds
@@ -45,7 +48,7 @@ open README.md. This short file is only a quick first-run checklist.
 
 6. Optional background watching.
    Settings > Enable Watch & Launch at Windows login/unlock starts a lightweight
-   helper while the main app is closed. It is off by default. The To Sort folder
+   helper while the main app is closed. It is off by default. The Watch folder
    can always be changed in Settings.
 
 Important limitations

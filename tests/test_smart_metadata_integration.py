@@ -17,6 +17,7 @@ from unittest.mock import MagicMock, patch
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
+import core_logic  # noqa: E402
 from core_logic import (  # noqa: E402
     DocumentExtraction,
     build_proposed_filename,
@@ -196,6 +197,7 @@ class SmartMetadataIntegrationTests(unittest.TestCase):
     def test_ai_backup_explicitly_disables_unused_automatic_function_calling(self) -> None:
         """The Gemini request should not enable the AFC feature that caused log noise."""
 
+        self.assertTrue(core_logic._load_genai())
         document = self.root / "ai-backup.pdf"
         extraction = DocumentExtraction(
             text="A Clear Local Report\nJane Doe\nPublished 2026",
@@ -213,7 +215,7 @@ class SmartMetadataIntegrationTests(unittest.TestCase):
         )
         with (
             patch("core_logic.extract_document", return_value=extraction),
-            patch("core_logic.genai.Client", return_value=client),
+            patch("core_logic.genai.Client", return_value=client) as create_client,
         ):
             details = get_document_details(
                 document,
@@ -227,6 +229,45 @@ class SmartMetadataIntegrationTests(unittest.TestCase):
         self.assertEqual(details["source"], "AI")
         config = client.models.generate_content.call_args.kwargs["config"]
         self.assertTrue(config.automatic_function_calling.disable)
+        options = create_client.call_args.kwargs["http_options"]
+        self.assertEqual(options.timeout, 20_000)
+        self.assertEqual(options.retry_options.attempts, 1)
+        client.close.assert_called_once_with()
+
+    def test_doi_candidates_stop_when_shared_lookup_budget_is_exhausted(self) -> None:
+        extraction = _article_extraction(text=(
+            "A Careful Example Article\n"
+            "doi:10.1234/first doi:10.1234/second doi:10.1234/third"
+        ))
+        with (
+            patch("core_logic.extract_document", return_value=extraction),
+            patch("core_logic.time.monotonic", side_effect=[100.0, 100.0, 112.0]),
+            patch("core_logic.resolve_doi", return_value=None) as resolve,
+        ):
+            details = get_document_details(self.root / "offline.pdf", api_key="")
+
+        self.assertEqual(details["source"], "Basic")
+        self.assertEqual(resolve.call_count, 1)
+        self.assertEqual(resolve.call_args.kwargs["deadline"], 112.0)
+
+    def test_ai_timeout_closes_client_and_returns_local_details(self) -> None:
+        self.assertTrue(core_logic._load_genai())
+        client = MagicMock()
+        client.models.generate_content.side_effect = TimeoutError("request timed out")
+        with (
+            patch("core_logic.extract_document", return_value=_article_extraction()),
+            patch("core_logic.genai.Client", return_value=client),
+        ):
+            details = get_document_details(
+                self.root / "timeout.pdf",
+                api_key="not-a-real-key",
+                allow_cloud_ai=True,
+                allow_online_metadata_lookup=False,
+            )
+
+        self.assertEqual(details["source"], "Basic")
+        self.assertEqual(details["title"], "A Careful Example Article")
+        client.close.assert_called_once_with()
 
     def test_confirmed_supplement_uses_parent_and_adds_one_si_to_pptx(self) -> None:
         """A DOI-declared supplement names itself after its verified parent."""
@@ -278,6 +319,7 @@ class SmartMetadataIntegrationTests(unittest.TestCase):
         self.assertIsNotNone(details)
         assert details is not None
         self.assertEqual([call.args for call in resolve.call_args_list], [(supplement_doi,), (PARENT_DOI,)])
+        self.assertEqual(resolve.call_args_list[0].kwargs["deadline"], resolve.call_args_list[1].kwargs["deadline"])
         self.assertTrue(details["is_supplementary_material"])
         self.assertEqual(details["supplemental_parent_doi"], PARENT_DOI)
         self.assertEqual(details["identifier"]["doi"], supplement_doi)

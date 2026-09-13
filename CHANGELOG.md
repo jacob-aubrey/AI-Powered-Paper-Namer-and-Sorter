@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.3.0 — 2026-09-13
+
+### Changed
+
+- Windows downloads keep runtime files in `_internal` beside the executable, avoiding extraction on every launch. Keep the complete extracted folder together.
+- PDF, Word, and Gemini libraries load when needed, allowing the main window to open sooner.
+- Settings now describe **Watch folder** and **Library folder** as roles. Both can have any name; the library root can contain existing documents and category subfolders.
+- Metadata lookups share a retry deadline, and Gemini requests have an explicit timeout and no automatic retry before local fallback.
+
+### Fixed
+
+- Watch & Launch opens immediately on a supported file event, leaving download-readiness checks to the app. Native instance checks replace PowerShell and duplicate launch delays.
+- Files already present when the helper starts are detected. Moving documents out of the watch folder does not reopen the app.
+- Opening an existing app restores its window. Background helpers have an independent lifetime and registration is refreshed after an app upgrade.
+- An unexpected document error no longer kills the sort or rename worker. Background logging no longer makes blocking calls into Tk, preventing settings/shutdown deadlocks.
+- Dismissing duplicate or final-move confirmations cancels the action. Dialog centering no longer applies Windows display scaling twice, keeping controls on-screen.
+- Library navigation uses Windows folder opening, and historical links handle filenames containing brackets literally.
+- Generic short titles cannot verify a longer unrelated DOI citation, and Windows reserved device names are rejected even before additional filename extensions.
+
+### Validation
+
+- Added regression coverage for startup, watcher events, confirmation cancellation, queue recovery, metadata limits, and filename edge cases.
+- Added an offline `--self-test <report.json>` command to check the packaged UI and document libraries without reading user settings or contacting metadata services.
+
 ## 1.2.1 — 2026-09-13
 
 ### Fixed

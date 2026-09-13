@@ -1,30 +1,22 @@
 # -*- mode: python ; coding: utf-8 -*-
-from PyInstaller.utils.hooks import collect_all
+from pathlib import Path
 
-datas = []
-binaries = []
-hiddenimports = ['CTkMessagebox']
-datas += [('assets', 'assets')]
-tmp_ret = collect_all('customtkinter')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-tmp_ret = collect_all('tkinterdnd2')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-tmp_ret = collect_all('docx')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-tmp_ret = collect_all('google.genai')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-
+# Maintained package hooks collect CustomTkinter fonts/themes, messagebox
+# images, Word templates, and only this platform's TkDnD libraries. collect_all
+# also pulled in SDK tests, notebook tools, and resources for other platforms.
+datas = [('assets/Icon.ico', 'assets'), ('assets/Icon.png', 'assets')]
+datas += [(str(path), 'assets/icons') for path in Path('assets/icons').glob('*.png')]
 
 a = Analysis(
     ['src\\main.py'],
     pathex=[],
-    binaries=binaries,
+    binaries=[],
     datas=datas,
-    hiddenimports=hiddenimports,
+    hiddenimports=[],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['PyQt5', 'PyQt6', 'PySide2', 'PySide6'],
+    excludes=['PyQt5', 'PyQt6', 'PySide2', 'PySide6', 'IPython', 'pytest'],
     noarchive=False,
     optimize=0,
 )
@@ -33,15 +25,15 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
     [],
-    exclude_binaries=False,
+    # Keeping dependencies beside the executable avoids unpacking the complete
+    # runtime into a new temporary directory on every GUI and watcher launch.
+    exclude_binaries=True,
     name='AI Paper Sorter',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -50,4 +42,13 @@ exe = EXE(
     version='version_info.txt',
     entitlements_file=None,
     icon=['assets\\Icon.ico'],
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=False,
+    name='AI Paper Sorter',
 )

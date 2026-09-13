@@ -4,6 +4,7 @@ import os
 import time
 import shutil
 import logging
+from glob import escape as escape_glob
 import re
 import subprocess
 import tempfile
@@ -14,6 +15,7 @@ import webbrowser
 from queue import Empty, Queue
 from tkinter import filedialog
 from xml.sax.saxutils import escape
+from xml.etree import ElementTree
 
 from tkinterdnd2 import DND_FILES, TkinterDnD
 import customtkinter as ctk
@@ -69,6 +71,8 @@ class TextboxRedirector:
 
     def __init__(self, textbox: ctk.CTkTextbox, resolve_document_path=None, on_link_error=None):
         self.textbox = textbox
+        self._main_thread_id = threading.get_ident()
+        self._pending_text = Queue()
         self.link_count = 0
         self._link_callbacks = {}
         self._resolve_document_path_callback = resolve_document_path
@@ -91,7 +95,21 @@ class TextboxRedirector:
         self.textbox.configure(state="normal")
 
     def write(self, text):
-        self.textbox.after(0, self._write_on_main_thread, text)
+        if threading.get_ident() == self._main_thread_id:
+            self._write_on_main_thread(text)
+        else:
+            # Tk's after() is itself a blocking cross-thread Tk call. Buffer
+            # worker logs so shutdown and settings synchronization cannot
+            # deadlock while the main thread waits for a worker lock.
+            self._pending_text.put(text)
+
+    def drain_pending(self):
+        for _ in range(200):
+            try:
+                text = self._pending_text.get_nowait()
+            except Empty:
+                return
+            self._write_on_main_thread(text)
 
     def _write_on_main_thread(self, text):
         self._set_editable()
@@ -269,27 +287,57 @@ def add_tooltip(widget, text: str):
     return widget
 
 
+def _dialog_work_area(window):
+    """Use the owner's monitor work area, excluding the Windows taskbar."""
+    if os.name == "nt":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class MonitorInfo(ctypes.Structure):
+                _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", wintypes.RECT),
+                            ("rcWork", wintypes.RECT), ("dwFlags", wintypes.DWORD)]
+
+            user32 = ctypes.WinDLL("user32", use_last_error=True)
+            user32.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
+            user32.MonitorFromWindow.restype = wintypes.HANDLE
+            user32.GetMonitorInfoW.argtypes = [wintypes.HANDLE, ctypes.POINTER(MonitorInfo)]
+            user32.GetMonitorInfoW.restype = wintypes.BOOL
+            monitor = user32.MonitorFromWindow(window.winfo_id(), 2)
+            info = MonitorInfo()
+            info.cbSize = ctypes.sizeof(info)
+            if monitor and user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+                work = info.rcWork
+                return work.left, work.top, work.right - work.left, work.bottom - work.top
+        except (AttributeError, OSError):
+            pass
+    return (window.winfo_vrootx(), window.winfo_vrooty(),
+            window.winfo_vrootwidth() or window.winfo_screenwidth(),
+            window.winfo_vrootheight() or window.winfo_screenheight())
+
+
 def center_window_over_master(window, master, *, min_width=0, min_height=0):
     """Size a dialog to its requested content and center it over the main window."""
     try:
         master.update_idletasks()
         window.update_idletasks()
 
-        # Use Tk's virtual desktop rather than only the primary screen. A main
-        # window on a monitor left/above the primary display has negative screen
-        # coordinates, so primary-screen clamping would misplace its dialogs.
-        virtual_x = window.winfo_vrootx()
-        virtual_y = window.winfo_vrooty()
-        virtual_width = window.winfo_vrootwidth() or window.winfo_screenwidth()
-        virtual_height = window.winfo_vrootheight() or window.winfo_screenheight()
-        width = min(max(min_width, window.winfo_width(), window.winfo_reqwidth()), max(320, virtual_width - 32))
-        height = min(max(min_height, window.winfo_height(), window.winfo_reqheight()), max(240, virtual_height - 64))
+        # Clamp to the owner's current monitor, not the combined desktop:
+        # mixed-size monitors otherwise let the footer fall behind the taskbar.
+        virtual_x, virtual_y, virtual_width, virtual_height = _dialog_work_area(master)
+        scale = getattr(window, "_apply_window_scaling", lambda value: value)
+        unscale = getattr(window, "_reverse_window_scaling", lambda value: value)
+        width = min(max(scale(min_width), window.winfo_width(), window.winfo_reqwidth()), max(320, virtual_width - 32))
+        height = min(max(scale(min_height), window.winfo_height(), window.winfo_reqheight()), max(240, virtual_height - 64))
         master_width = max(master.winfo_width(), master.winfo_reqwidth())
         master_height = max(master.winfo_height(), master.winfo_reqheight())
         x = max(virtual_x + 16, min(master.winfo_rootx() + (master_width - width) // 2, virtual_x + virtual_width - width - 16))
         y = max(virtual_y + 16, min(master.winfo_rooty() + (master_height - height) // 2, virtual_y + virtual_height - height - 48))
 
-        window.geometry(f"{width}x{height}+{x}+{y}")
+        # winfo reports physical pixels; CTk.geometry takes unscaled dimensions.
+        # Feeding physical dimensions back to CTk enlarged every dialog again
+        # at 125%/150% display scaling and pushed Save/Confirm off-screen.
+        window.geometry(f"{int(unscale(width))}x{int(unscale(height))}{int(x):+d}{int(y):+d}")
         window.lift()
         window.focus_force()
     except Exception:
@@ -473,26 +521,33 @@ class SettingsDialog(ctk.CTkToplevel):
             value=settings.allow_cloud_ai_for_presentation_documents
         )
 
-        ctk.CTkLabel(frame, text="To Sort folder").grid(row=0, column=0, padx=10, pady=(14, 6), sticky="w")
+        ctk.CTkLabel(frame, text="Watch folder").grid(row=0, column=0, padx=10, pady=(14, 6), sticky="w")
         ctk.CTkEntry(frame, textvariable=self.watch_var).grid(row=0, column=1, padx=10, pady=(14, 6), sticky="ew")
         self.watch_browse_button = ctk.CTkButton(frame, text="Browse", width=90, command=self._browse_watch)
         self.watch_browse_button.grid(row=0, column=2, padx=10, pady=(14, 6))
-        add_tooltip(self.watch_browse_button, "Choose the incoming folder the app watches for supported PDFs, Word documents, and PowerPoint presentations.")
+        add_tooltip(self.watch_browse_button, "Choose any folder for incoming PDFs, Word documents, and PowerPoint presentations. The folder can have any name.")
 
-        ctk.CTkLabel(frame, text="Sorted papers root").grid(row=1, column=0, padx=10, pady=6, sticky="w")
+        ctk.CTkLabel(frame, text="Library folder").grid(row=1, column=0, padx=10, pady=6, sticky="w")
         ctk.CTkEntry(frame, textvariable=self.sorted_var).grid(row=1, column=1, padx=10, pady=6, sticky="ew")
         self.sorted_browse_button = ctk.CTkButton(frame, text="Browse", width=90, command=self._browse_sorted)
         self.sorted_browse_button.grid(row=1, column=2, padx=10, pady=6)
-        add_tooltip(self.sorted_browse_button, "Choose the root folder where sorted and renamed papers are stored.")
+        add_tooltip(self.sorted_browse_button, "Choose any folder that contains your organized documents and category subfolders. The folder can have any name.")
 
-        ctk.CTkLabel(frame, text="How should documents be identified?").grid(row=2, column=0, padx=10, pady=6, sticky="w")
+        ctk.CTkLabel(
+            frame,
+            text="These are folder roles, not required names. Watch any incoming folder; "
+                 "choose a library folder containing your documents and category subfolders.",
+            wraplength=620, justify="left", text_color=("gray35", "gray70"),
+        ).grid(row=2, column=0, columnspan=3, padx=10, pady=(0, 10), sticky="w")
+
+        ctk.CTkLabel(frame, text="How should documents be identified?").grid(row=3, column=0, padx=10, pady=6, sticky="w")
         self.naming_mode_menu = ctk.CTkOptionMenu(
             frame,
             variable=self.naming_mode_var,
             values=list(NAMING_MODE_LABELS.values()),
             command=lambda _value: self._update_identification_controls(),
         )
-        self.naming_mode_menu.grid(row=2, column=1, padx=10, pady=6, sticky="w")
+        self.naming_mode_menu.grid(row=3, column=1, padx=10, pady=6, sticky="w")
         add_tooltip(
             self.naming_mode_menu,
             "Smart metadata lookup checks an exact DOI first and uses AI only as a backup. "
@@ -504,7 +559,7 @@ class SettingsDialog(ctk.CTkToplevel):
             text="Use online DOI/citation lookup (recommended)",
             variable=self.online_metadata_lookup_var,
         )
-        self.online_metadata_check.grid(row=3, column=1, padx=10, pady=(2, 4), sticky="w")
+        self.online_metadata_check.grid(row=4, column=1, padx=10, pady=(2, 4), sticky="w")
         add_tooltip(
             self.online_metadata_check,
             "When a DOI is found, the app sends that DOI—not the document text—to a scholarly metadata service. "
@@ -517,41 +572,41 @@ class SettingsDialog(ctk.CTkToplevel):
             wraplength=620,
             text_color=("gray35", "gray70"),
         )
-        self.identification_note.grid(row=4, column=1, columnspan=2, padx=10, pady=(0, 4), sticky="w")
+        self.identification_note.grid(row=5, column=1, columnspan=2, padx=10, pady=(0, 4), sticky="w")
 
-        ctk.CTkLabel(frame, text="Gemini API key").grid(row=5, column=0, padx=10, pady=6, sticky="w")
+        ctk.CTkLabel(frame, text="Gemini API key").grid(row=6, column=0, padx=10, pady=6, sticky="w")
         self.api_key_entry = ctk.CTkEntry(frame, textvariable=self.api_key_var, show="*")
-        self.api_key_entry.grid(row=5, column=1, padx=10, pady=6, sticky="ew")
+        self.api_key_entry.grid(row=6, column=1, padx=10, pady=6, sticky="ew")
         add_tooltip(self.api_key_entry, "Optional. Smart metadata lookup can still use a DOI without a Gemini key; a key enables AI backup.")
         self.api_help_button = ctk.CTkButton(frame, text="Get Key", width=90, command=self._show_api_help)
-        self.api_help_button.grid(row=5, column=2, padx=10, pady=6)
+        self.api_help_button.grid(row=6, column=2, padx=10, pady=6)
         add_tooltip(self.api_help_button, "Show concise setup instructions for optional Gemini backup analysis.")
 
-        ctk.CTkLabel(frame, text="Filename style").grid(row=6, column=0, padx=10, pady=(14, 6), sticky="w")
+        ctk.CTkLabel(frame, text="Filename style").grid(row=7, column=0, padx=10, pady=(14, 6), sticky="w")
         self.filename_style_menu = ctk.CTkOptionMenu(
             frame,
             variable=self.filename_format_var,
             values=list(FILENAME_STYLE_LABELS.values()),
             command=lambda _value: self._update_filename_style_controls(),
         )
-        self.filename_style_menu.grid(row=6, column=1, padx=10, pady=(14, 6), sticky="w")
+        self.filename_style_menu.grid(row=7, column=1, padx=10, pady=(14, 6), sticky="w")
         add_tooltip(
             self.filename_style_menu,
             "Choose how verified metadata is arranged in the proposed filename. This does not change AI/privacy mode.",
         )
 
-        ctk.CTkLabel(frame, text="Custom template").grid(row=7, column=0, padx=10, pady=6, sticky="nw")
+        ctk.CTkLabel(frame, text="Custom template").grid(row=8, column=0, padx=10, pady=6, sticky="nw")
         self.custom_filename_template_entry = ctk.CTkEntry(
             frame,
             textvariable=self.custom_filename_template_var,
         )
-        self.custom_filename_template_entry.grid(row=7, column=1, columnspan=2, padx=10, pady=6, sticky="ew")
+        self.custom_filename_template_entry.grid(row=8, column=1, columnspan=2, padx=10, pady=6, sticky="ew")
         add_tooltip(
             self.custom_filename_template_entry,
             "Available only for Custom template. The original PDF, Word, or PowerPoint extension is always retained automatically.",
         )
         self.filename_style_preview = ctk.CTkLabel(frame, text="", justify="left", wraplength=650)
-        self.filename_style_preview.grid(row=8, column=0, columnspan=3, padx=10, pady=(2, 10), sticky="w")
+        self.filename_style_preview.grid(row=9, column=0, columnspan=3, padx=10, pady=(2, 10), sticky="w")
         ctk.CTkLabel(
             frame,
             text=(
@@ -562,14 +617,14 @@ class SettingsDialog(ctk.CTkToplevel):
             justify="left",
             wraplength=650,
             text_color=("gray35", "gray70"),
-        ).grid(row=9, column=0, columnspan=3, padx=10, pady=(0, 10), sticky="w")
+        ).grid(row=10, column=0, columnspan=3, padx=10, pady=(0, 10), sticky="w")
 
         self.word_ai_check = ctk.CTkCheckBox(
             frame,
             text="Allow AI analysis of Word documents (.docx)",
             variable=self.allow_cloud_ai_word_var,
         )
-        self.word_ai_check.grid(row=10, column=1, padx=10, pady=(8, 4), sticky="w")
+        self.word_ai_check.grid(row=11, column=1, padx=10, pady=(8, 4), sticky="w")
         add_tooltip(
             self.word_ai_check,
             "Off by default. Enable only if you want the app to send extracted Word-document text to Gemini for AI naming.",
@@ -580,7 +635,7 @@ class SettingsDialog(ctk.CTkToplevel):
             text="Allow AI analysis of PowerPoint presentations (.pptx)",
             variable=self.allow_cloud_ai_presentation_var,
         )
-        self.presentation_ai_check.grid(row=11, column=1, padx=10, pady=(4, 4), sticky="w")
+        self.presentation_ai_check.grid(row=12, column=1, padx=10, pady=(4, 4), sticky="w")
         add_tooltip(
             self.presentation_ai_check,
             "Off by default. Enable only if you want the app to send extracted PowerPoint slide text to Gemini for AI backup naming. "
@@ -593,7 +648,7 @@ class SettingsDialog(ctk.CTkToplevel):
             variable=self.watch_launch_var,
             command=self._on_watch_launch_toggle,
         )
-        self.watch_launch_check.grid(row=12, column=1, padx=10, pady=(4, 12), sticky="w")
+        self.watch_launch_check.grid(row=13, column=1, padx=10, pady=(4, 12), sticky="w")
         add_tooltip(self.watch_launch_check, "Run the lightweight watcher in the background so supported files added later can open the sorter app.")
 
         button_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -667,13 +722,13 @@ class SettingsDialog(ctk.CTkToplevel):
 
     def _browse_watch(self):
         initial = self.watch_var.get() or str(Path.home())
-        selected = filedialog.askdirectory(parent=self.main_window, title="Choose To Sort folder", initialdir=initial)
+        selected = filedialog.askdirectory(parent=self.main_window, title="Choose watch folder", initialdir=initial)
         if selected:
             self.watch_var.set(selected)
 
     def _browse_sorted(self):
         initial = self.sorted_var.get() or str(Path.home())
-        selected = filedialog.askdirectory(parent=self.main_window, title="Choose Sorted papers root", initialdir=initial)
+        selected = filedialog.askdirectory(parent=self.main_window, title="Choose Library folder", initialdir=initial)
         if selected:
             self.sorted_var.set(selected)
 
@@ -715,7 +770,7 @@ class SettingsDialog(ctk.CTkToplevel):
         if paths_overlap(watch_path, sorted_path):
             self._messagebox(
                 title="Folders Overlap",
-                message="The To Sort folder and Sorted papers root must be separate folders. Neither can contain the other.",
+                message="The watch folder and Library folder must be separate folders. Neither can contain the other.",
                 icon="warning",
             )
             return
@@ -920,31 +975,78 @@ class App:
 
     def _start_watch_launcher_now(self):
         _command, _arguments, working_directory = self._watch_launcher_command()
+        launch_options = {}
+        if getattr(sys, "frozen", False):
+            launch_options["env"] = dict(os.environ, PYINSTALLER_RESET_ENVIRONMENT="1")
         subprocess.Popen(
             self._watch_launcher_popen_args(),
             cwd=working_directory,
             creationflags=0x08000000,
+            **launch_options,
         )
 
     def _remove_watch_launch_task(self):
+        self._stop_watch_launcher_process()
         self._run_hidden(["schtasks", "/Delete", "/TN", self.WATCH_LAUNCH_TASK_NAME, "/F"])
         self._remove_watch_launch_startup_file()
-        self._stop_watch_launcher_process()
+
+    def _registered_watch_launcher_markers(self):
+        """Find this app's previous registered binary before replacing its task."""
+        markers = set()
+        try:
+            result = self._run_hidden(["schtasks", "/Query", "/TN", self.WATCH_LAUNCH_TASK_NAME, "/XML"])
+            if result.returncode == 0:
+                task = ElementTree.fromstring(result.stdout)
+                for action in task.findall(".//{*}Exec"):
+                    command = (action.findtext("{*}Command") or "").strip().strip('"')
+                    arguments = (action.findtext("{*}Arguments") or "").strip()
+                    if arguments == "--watch" and Path(command).name.casefold() == "ai paper sorter.exe":
+                        markers.add(command)
+        except (OSError, subprocess.SubprocessError, ElementTree.ParseError):
+            pass
+        startup_file = self._startup_file_path()
+        try:
+            if startup_file and startup_file.is_file():
+                for command in re.findall(r'^start "" "([^"\r\n]+)" --watch\s*$', startup_file.read_text(encoding="utf-8"), re.MULTILINE):
+                    if Path(command).name.casefold() == "ai paper sorter.exe":
+                        markers.add(command)
+        except OSError:
+            pass
+        return markers
 
     def _stop_watch_launcher_process(self):
-        marker = self._watch_launcher_process_marker().replace("'", "''")
+        markers = self._registered_watch_launcher_markers()
+        markers.add(self._watch_launcher_process_marker())
+        # Match the recorded executable literally; paths can contain brackets.
+        conditions = []
+        for marker in sorted(markers):
+            quoted = marker.replace("'", "''")
+            if marker.lower().endswith(".exe"):
+                conditions.append(f"$_.ExecutablePath -eq '{quoted}'")
+            else:
+                conditions.append(f"$_.CommandLine.IndexOf('{quoted}', [StringComparison]::OrdinalIgnoreCase) -ge 0")
         powershell = (
             "Get-CimInstance Win32_Process | "
-            "Where-Object { $_.CommandLine -and $_.CommandLine -like '*--watch*' -and "
-            f"$_.CommandLine -like '*{marker}*' }} | "
+            "Where-Object { $_.CommandLine -and $_.CommandLine -match '(?:^|\\s)--watch(?:\\s|$)' -and ("
+            + " -or ".join(conditions) + ") } | "
             "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
         )
         self._run_hidden(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", powershell])
 
+    def _sync_watch_launch_on_startup(self):
+        try:
+            self._sync_watch_launch_setting()
+        except Exception:
+            logging.exception("Could not refresh Watch & Launch. Save Settings to retry.")
+
     def _sync_watch_launch_setting(self):
+        with self._watch_launch_sync_lock:
+            self._apply_watch_launch_setting()
+
+    def _apply_watch_launch_setting(self):
         if self.settings.watch_and_launch_enabled:
             try:
-                # Restart the helper so a changed To Sort folder takes effect now.
+                # Restart the helper so a changed watch folder takes effect now.
                 self._stop_watch_launcher_process()
                 self._remove_watch_launch_startup_file()
                 self._install_watch_launch_task()
@@ -1022,17 +1124,17 @@ class App:
             command=self.refresh_to_sort_folder,
         )
         self.btn_refresh.pack(side="left", padx=4)
-        add_tooltip(self.btn_refresh, "Rescan the To Sort folder and queue supported documents that are waiting there.")
+        add_tooltip(self.btn_refresh, "Rescan the watch folder and queue supported documents that are waiting there.")
         self.btn_view_sorted = ctk.CTkButton(
             self.toolbar_buttons,
-            text="Sorted",
+            text="Library",
             image=self.toolbar_icons["sorted"],
             compound="left",
             width=96,
             command=self.open_sorted_folder,
         )
         self.btn_view_sorted.pack(side="left", padx=4)
-        add_tooltip(self.btn_view_sorted, "Open the configured sorted-paper root folder in Windows Explorer.")
+        add_tooltip(self.btn_view_sorted, "Open the configured library folder in Windows Explorer.")
         self.btn_view_log = ctk.CTkButton(
             self.toolbar_buttons,
             text="Log",
@@ -1052,7 +1154,7 @@ class App:
             command=self.open_settings,
         )
         self.settings_button.pack(side="left", padx=(4, 0))
-        add_tooltip(self.settings_button, "Set the To Sort folder and sorted-paper library root for this PC.")
+        add_tooltip(self.settings_button, "Set the watch folder and library folder for this PC.")
 
         self.top_frame = ctk.CTkFrame(self.main_frame, fg_color="#18191a")  # Match log frame color
         self.top_frame.grid(row=1, column=0, padx=10, pady=10, sticky="nsew")
@@ -1064,7 +1166,7 @@ class App:
         self.drag_label = ctk.CTkLabel(self.browse_text_frame, text="To sort documents, drag them here, or ", font=ctk.CTkFont(size=14)); self.drag_label.pack(side="left")
         self.browse_label = ctk.CTkLabel(self.browse_text_frame, text="browse", font=ctk.CTkFont(size=14, underline=True), text_color=("blue", "cyan"), cursor="hand2")
         self.browse_label.pack(side="left"); self.browse_label.bind("<Button-1>", lambda e: self.select_and_add_papers())
-        add_tooltip(self.browse_label, "Select PDF, Word (.docx), or PowerPoint (.pptx or .ppt) files to copy into the To Sort folder.")
+        add_tooltip(self.browse_label, "Select PDF, Word (.docx), or PowerPoint (.pptx or .ppt) files to copy into the watch folder.")
         self.after_browse_label = ctk.CTkLabel(self.browse_text_frame, text=" your computer...", font=ctk.CTkFont(size=14)); self.after_browse_label.pack(side="left")
         
         self.bottom_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
@@ -1105,6 +1207,7 @@ class App:
         )
         self.file_queue = Queue(); self.rename_queue = Queue(); self.gui_queue = Queue()
         self.queue_lock = threading.Lock(); self.queued_sort_paths = set()
+        self._watch_launch_sync_lock = threading.Lock()
         self.snoozed_sort_signatures = {}
         self.ignored_watch_event_until = {}
         self.gui_modal_depth = 0
@@ -1113,8 +1216,13 @@ class App:
         self.rename_batch_total = 0; self.rename_batch_done = 0
         self.rename_batch_renamed = 0; self.rename_batch_skipped = 0
         self.root.after(100, self.start_app)
+        self.root.after(100, self._drain_log_messages)
         # One-time safety on startup
         self.root.after(0, self._normalize_root)
+
+    def _drain_log_messages(self):
+        self.redirector.drain_pending()
+        self.root.after(100, self._drain_log_messages)
 
     # --- NEW: normalize helper to fix any leaked alpha/disabled state from modals ---
     def _normalize_root(self):
@@ -1186,7 +1294,7 @@ class App:
             return None
         matches = []
         try:
-            for candidate in sorted_root.rglob(logged_path.name):
+            for candidate in sorted_root.rglob(escape_glob(logged_path.name)):
                 if candidate.is_file():
                     matches.append(candidate)
                     if len(matches) > 1:
@@ -1202,11 +1310,11 @@ class App:
             message = (
                 "This log entry remembers where the document was when it was sorted, "
                 "but that file or folder is no longer there.\n\n"
-                "The app looked in your Sorted folder for one clear current match and "
+                "The app looked in your library folder for one clear current match and "
                 "could not safely identify one. The document may have been moved, renamed, "
                 "or deleted.\n\n"
                 f"Document: {paper_path.name}\n\n"
-                "Use the Sorted button to browse for it manually."
+                "Use the Library button to browse for it manually."
             )
             title = "This Log Link Is Out of Date"
         else:
@@ -1247,7 +1355,7 @@ class App:
         self._prepare_log_file()
         if hasattr(self, "redirector"):
             self._replace_log_file_handler()
-        logging.info(f"Settings saved. To Sort: {self.WATCH_FOLDER}; Sorted: {self.SORTED_FOLDER}")
+        logging.info(f"Settings saved. Watch folder: {self.WATCH_FOLDER}; Library folder: {self.SORTED_FOLDER}")
         try:
             self._sync_watch_launch_setting()
         except Exception as e:
@@ -1287,6 +1395,9 @@ class App:
 
     def start_app(self):
         self.app_started = True
+        if self.settings.watch_and_launch_enabled:
+            # Refresh a previous release's registered path without holding up Tk.
+            threading.Thread(target=self._sync_watch_launch_on_startup, daemon=True).start()
         if not self._active_api_key():
             logging.info("Gemini API key is not set. Basic naming is available. To enable AI naming, open Settings, click Get Key, and paste your key.")
         self.worker_thread = threading.Thread(target=self.processing_loop, daemon=True); self.worker_thread.start()
@@ -1481,6 +1592,8 @@ class App:
                     self.gui_queue.put(("sort", document_path, details))
                 else:
                     logging.error(f"Could not get details for {document_path.name}.")
+            except Exception:
+                logging.exception("Could not process %s; continuing with the next document.", document_path.name)
             finally:
                 if clear_when_done:
                     self._clear_queued_sort_file(document_path)
@@ -1497,6 +1610,9 @@ class App:
                 else:
                     logging.error(f"Could not get details for {document_path.name}.")
                     self.gui_queue.put(("rename_failed", document_path, {}))
+            except Exception:
+                logging.exception("Could not prepare %s for renaming; continuing with the next document.", document_path.name)
+                self.gui_queue.put(("rename_failed", document_path, {}))
             finally:
                 self.rename_queue.task_done()
 
@@ -1595,8 +1711,8 @@ class App:
             return
 
         final_filename_base = Path(final_filename).stem
-        duplicate_pattern = f"{final_filename_base}*{document_path.suffix.lower()}"
-        if list(self.SORTED_FOLDER.rglob(duplicate_pattern)):
+        duplicate_pattern = f"{escape_glob(final_filename_base)}*{document_path.suffix.lower()}"
+        if next(self.SORTED_FOLDER.rglob(duplicate_pattern), None) is not None:
             msg_text = f"A potential duplicate exists for: '{final_filename}'\n\nAdd anyway?"
             msg = self._messagebox(
                 title="Suspected Duplicate",
@@ -1607,7 +1723,7 @@ class App:
             )
             choice = msg.get()
             self._normalize_root()
-            if choice == "Skip":
+            if choice != "Add Anyway":
                 self._snooze_sort_file(document_path)
                 logging.warning(f"DUPLICATE: User chose to skip '{document_path.name}'.")
                 return
@@ -1634,7 +1750,7 @@ class App:
         )
         confirm_choice = confirm_msg.get()
         self._normalize_root()
-        if confirm_choice == "Cancel":
+        if confirm_choice != "Confirm":
             self._snooze_sort_file(document_path)
             logging.info(f"User canceled final move for '{document_path.name}'.")
             return
@@ -1670,7 +1786,7 @@ class App:
             self._messagebox(
                 title="Invalid Destination",
                 message=(
-                    "The To Sort folder and its subfolders cannot be destinations. "
+                    "The watch folder and its subfolders cannot be destinations. "
                     "Choose a folder outside the watched inbox to prevent the file from being queued again."
                 ),
                 icon="warning",
@@ -1681,8 +1797,8 @@ class App:
             return dest
         except ValueError:
             msg = self._messagebox(
-                title="Outside Sorted Folder",
-                message="This folder is outside your sorted papers root. Use it anyway?",
+                title="Outside Library Folder",
+                message="This folder is outside your library folder. Use it anyway?",
                 icon="question",
                 option_1="Cancel",
                 option_2="Use Anyway",
@@ -1707,7 +1823,7 @@ class App:
         )
         choice = self._run_modal(choice_dialog.get)
         self._normalize_root()
-        if choice == "Cancel":
+        if choice not in {"Folder", "Files"}:
             logging.info("User canceled the rename documents operation.")
             return
         document_files = []
@@ -1801,14 +1917,14 @@ class App:
                 path for path in self.WATCH_FOLDER.iterdir() if path.is_file() and is_processable_document(path)
             )
         except OSError as exc:
-            logging.error(f"Could not scan the To Sort folder: {exc}")
+            logging.error(f"Could not scan the watch folder: {exc}")
             return
         if document_files:
             logging.info(f"Found {len(document_files)} supported document(s) to queue for processing.")
             for document_path in document_files:
                 self._queue_sort_file(document_path, force=force)
         else:
-            logging.info("No supported documents found; the To Sort folder is empty.")
+            logging.info("No supported documents found; the watch folder is empty.")
 
     def refresh_to_sort_folder(self):
         settings_were_ready = self.settings and self.settings.is_complete()
@@ -1838,7 +1954,7 @@ class App:
                 destination_path = unique_path(self.WATCH_FOLDER / source_path.name)
                 shutil.copy2(source_path, destination_path); added += 1
             except Exception as e: logging.error(f"Failed to copy '{source_path.name}': {e}")
-        logging.info(f"User added {added} document(s) to the To Sort folder.")
+        logging.info(f"User added {added} document(s) to the watch folder.")
         
     def handle_drop(self, event):
         if not self._ensure_settings():
@@ -1853,16 +1969,25 @@ class App:
                 except Exception as e: logging.error(f"Failed to copy '{source_path.name}': {e}")
             else:
                 logging.warning(f"Skipped unsupported document: {source_path.name}")
-        if added_count > 0: logging.info(f"User dropped {added_count} document(s) into the To Sort folder.")
+        if added_count > 0: logging.info(f"User dropped {added_count} document(s) into the watch folder.")
         
     def open_watch_folder(self):
         if not self._ensure_settings():
             return
-        webbrowser.open(self.WATCH_FOLDER)
+        self._open_folder(self.WATCH_FOLDER)
     def open_sorted_folder(self):
         if not self._ensure_settings():
             return
-        webbrowser.open(self.SORTED_FOLDER)
+        self._open_folder(self.SORTED_FOLDER)
+
+    def _open_folder(self, folder):
+        try:
+            if os.name == "nt":
+                os.startfile(str(folder.resolve()), "open")
+            else:
+                webbrowser.open(folder.resolve().as_uri())
+        except OSError as error:
+            self._messagebox(title="Folder Unavailable", message=f"Could not open the folder:\n{error}", icon="error")
     def open_log_file(self):
         if not self.LOG_FILE.exists():
             logging.info("No log file exists yet.")

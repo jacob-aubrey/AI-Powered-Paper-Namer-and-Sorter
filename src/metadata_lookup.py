@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Mapping, Sequence
 from urllib.error import HTTPError, URLError
@@ -210,6 +211,7 @@ def resolve_doi(
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
     user_agent: str = DEFAULT_USER_AGENT,
     providers: Sequence[str] = ("crossref", "datacite"),
+    deadline: float | None = None,
 ) -> DOIResolution | None:
     """Look up one exact DOI through Crossref, then DataCite if needed.
 
@@ -217,7 +219,9 @@ def resolve_doi(
     provider's exact DOI endpoint plus ``timeout`` and ``user_agent`` keyword
     arguments, and must return decoded JSON.  Any bad response, network
     problem, provider outage, or malformed record safely returns ``None`` (or
-    proceeds to the next provider).  No document text is ever sent here.
+    proceeds to the next provider). ``deadline`` is an optional shared monotonic
+    deadline that prevents retries from accumulating across document candidates.
+    No document text is ever sent here.
     """
 
     normalized_doi = normalize_doi(doi)
@@ -228,11 +232,17 @@ def resolve_doi(
     fetcher = fetch_json or _fetch_json
 
     for provider in _normalized_providers(providers):
+        request_timeout = safe_timeout
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            request_timeout = min(request_timeout, remaining)
         url = _provider_url(provider, normalized_doi)
         if not url:
             continue
         try:
-            payload = fetcher(url, timeout=safe_timeout, user_agent=safe_user_agent)
+            payload = fetcher(url, timeout=request_timeout, user_agent=safe_user_agent)
             if not isinstance(payload, Mapping):
                 raise MetadataLookupError("Provider did not return a JSON object.")
             resolution = _parse_provider_response(provider, payload, normalized_doi)

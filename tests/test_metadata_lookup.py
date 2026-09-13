@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -157,6 +158,22 @@ class MetadataLookupTests(unittest.TestCase):
                 providers=("crossref",),
             )
         )
+
+    def test_shared_deadline_limits_later_provider_request_time(self):
+        fetcher = Mock(side_effect=OSError("offline"))
+        with patch("metadata_lookup.time.monotonic", side_effect=[100.0, 108.0]):
+            result = resolve_doi("10.1000/offline", fetch_json=fetcher, deadline=110.0)
+
+        self.assertIsNone(result)
+        self.assertEqual([call.kwargs["timeout"] for call in fetcher.call_args_list], [8.0, 2.0])
+
+    def test_expired_shared_deadline_skips_network_requests(self):
+        fetcher = Mock()
+        with patch("metadata_lookup.time.monotonic", return_value=110.0):
+            result = resolve_doi("10.1000/offline", fetch_json=fetcher, deadline=110.0)
+
+        self.assertIsNone(result)
+        fetcher.assert_not_called()
 
     def test_result_can_be_translated_to_the_sorter_metadata_shape(self):
         result = DOIResolution(
