@@ -19,7 +19,11 @@ Reviewed startup/packaging, Watch & Launch, settings, GUI queues and confirmatio
 - [x] Correct repeated DPI scaling during dialog centering and use the owner's monitor work area.
 - [x] Add regression coverage and an offline packaged-app self-test.
 
-## Measurements on this PC
+## 1.3.1 validation
+
+Citation names, SI local extraction and simulated AI fallback, privacy controls, versioned window activation, and independent background controls have regression coverage. Source diagnostics construct the UI and exercise extraction and bundled assets without contacting external services. Watcher logs expose background failures.
+
+## 1.3.0 measurements on this PC
 
 | Check | Previous | Updated |
 | --- | --- | --- |
@@ -37,6 +41,6 @@ The 12-second DOI budget is a shared retry deadline, and the 20-second Gemini se
 ## Suggested next upgrades
 
 - [ ] Move large file copies/moves and recursive library searches off the GUI thread, with progress and cancellation. Those operations can still pause the window on large files or slow/network folders.
-- [ ] Show Watch & Launch health in the UI and retry when a watched drive disconnects or becomes available again.
+- [x] Show background helper status with Start/Stop/Restart and retry temporary folder/notification failures (1.3.1).
 - [ ] Add a library filename index and an undo-last-move action, with collision checks.
 - [ ] Offer optional OCR for scanned PDFs, clearly distinguishing extracted text from verified metadata.

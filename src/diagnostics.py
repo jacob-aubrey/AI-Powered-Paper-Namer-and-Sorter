@@ -6,10 +6,12 @@ import tempfile
 import time
 import traceback
 
+from version import APP_VERSION, WINDOW_TITLE
+
 
 def run_self_test(report_path: str) -> int:
     started = time.perf_counter()
-    report = {"passed": [], "status": "failed"}
+    report = {"version": APP_VERSION, "passed": [], "status": "failed"}
     root = None
     try:
         from app import App, DnDCTk, SettingsDialog
@@ -26,6 +28,8 @@ def run_self_test(report_path: str) -> int:
                 root = DnDCTk()
                 root.withdraw()
                 instance = App(root)
+                assert root.title() == WINDOW_TITLE
+                report["window_title"] = root.title()
                 root.update_idletasks()
                 report["ui_construction_seconds"] = round(time.perf_counter() - started, 3)
                 report["passed"].append("main window, icons, fonts, and drag-and-drop library")

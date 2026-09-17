@@ -1,5 +1,11 @@
 # -*- mode: python ; coding: utf-8 -*-
 from pathlib import Path
+import runpy
+
+release = runpy.run_path(str(Path(SPECPATH) / 'src' / 'version.py'))
+version_resource = Path(SPECPATH) / 'build' / 'version_info.txt'
+version_resource.parent.mkdir(parents=True, exist_ok=True)
+version_resource.write_text(release['windows_version_info'](), encoding='utf-8')
 
 # Maintained package hooks collect CustomTkinter fonts/themes, messagebox
 # images, Word templates, and only this platform's TkDnD libraries. collect_all
@@ -39,7 +45,7 @@ exe = EXE(
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
-    version='version_info.txt',
+    version=str(version_resource),
     entitlements_file=None,
     icon=['assets\\Icon.ico'],
 )

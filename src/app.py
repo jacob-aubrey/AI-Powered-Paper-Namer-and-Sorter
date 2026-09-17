@@ -11,6 +11,7 @@ import tempfile
 from pathlib import Path
 import sys
 import threading
+from dataclasses import replace
 import webbrowser
 from queue import Empty, Queue
 from tkinter import filedialog
@@ -35,6 +36,7 @@ from core_logic import (
 )
 from document_types import SUPPORTED_DOCUMENT_EXTENSIONS, is_processable_document
 from settings import AppSettings, SettingsManager
+from version import WINDOW_TITLE
 
 
 DOCUMENT_FILE_TYPES = [
@@ -487,7 +489,7 @@ class FilenameEditorDialog(ctk.CTkToplevel):
         self.destroy()
 
 class SettingsDialog(ctk.CTkToplevel):
-    def __init__(self, master, settings: AppSettings):
+    def __init__(self, master, settings: AppSettings, *, watcher_action=None, watcher_status=None):
         super().__init__(master)
         self.main_window = master
         self.title("Settings")
@@ -497,6 +499,8 @@ class SettingsDialog(ctk.CTkToplevel):
         self.transient(master)
         self.grab_set()
         self.result = None
+        self._watcher_action = watcher_action
+        self._watcher_status = watcher_status
 
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(0, weight=1)
@@ -651,6 +655,22 @@ class SettingsDialog(ctk.CTkToplevel):
         self.watch_launch_check.grid(row=13, column=1, padx=10, pady=(4, 12), sticky="w")
         add_tooltip(self.watch_launch_check, "Run the lightweight watcher in the background so supported files added later can open the sorter app.")
 
+        self.watcher_status_label = ctk.CTkLabel(frame, text="Background Watch & Launch", anchor="w", wraplength=630, justify="left")
+        self.watcher_status_label.grid(row=14, column=0, columnspan=3, padx=10, sticky="ew")
+        controls = ctk.CTkFrame(frame, fg_color="transparent")
+        controls.grid(row=15, column=0, columnspan=3, padx=10, pady=8, sticky="w")
+        self.watcher_buttons = {}
+        for action in ("start", "stop", "restart"):
+            button = ctk.CTkButton(controls, text=action.title(), width=100,
+                                  command=lambda action=action: self._run_watcher_action(action))
+            button.pack(side="left", padx=(0, 8))
+            self.watcher_buttons[action] = button
+        ctk.CTkLabel(frame, text="Start / Stop / Restart apply immediately to your saved watch folder. "
+                     "Stop leaves this open app processing documents. Refresh only rescans files. "
+                     "Save folder changes before using these controls.",
+                     wraplength=630, justify="left", text_color=("gray35", "gray70")).grid(
+                         row=16, column=0, columnspan=3, padx=10, pady=(0, 10), sticky="w")
+
         button_frame = ctk.CTkFrame(self, fg_color="transparent")
         button_frame.grid(row=1, column=0, padx=16, pady=(0, 16), sticky="ew")
         button_frame.grid_columnconfigure((0, 1), weight=1)
@@ -663,7 +683,32 @@ class SettingsDialog(ctk.CTkToplevel):
         self.custom_filename_template_var.trace_add("write", lambda *_args: self._update_filename_style_controls())
         self._update_identification_controls()
         self._update_filename_style_controls()
+        self._poll_watcher_status()
         self.after_idle(lambda: center_window_over_master(self, self.main_window, min_width=700, min_height=560))
+
+    def _run_watcher_action(self, action):
+        try:
+            self._watcher_action(action)
+            self.watch_launch_var.set(action != "stop")
+        except Exception as exc:
+            self._messagebox(title="Watch & Launch", message=str(exc), icon="warning")
+
+    def _poll_watcher_status(self):
+        if not self.winfo_exists():
+            return
+        if self._watcher_status is None:
+            for button in self.watcher_buttons.values():
+                button.configure(state="disabled")
+            return
+        status = self._watcher_status()
+        busy = status["busy"]
+        self.watcher_status_label.configure(text="Background Watch & Launch: " + status["message"])
+        self.save_button.configure(state="disabled" if busy else "normal")
+        self.watch_launch_check.configure(state="disabled" if busy else "normal")
+        for action, button in self.watcher_buttons.items():
+            disabled = busy or (action == "start" and status["running"]) or (action == "restart" and not status["enabled"] and not status["running"])
+            button.configure(state="disabled" if disabled else "normal")
+        self.after(750, self._poll_watcher_status)
 
     def _messagebox(self, **kwargs):
         return create_centered_messagebox(self, center_on=self.main_window, **kwargs)
@@ -851,6 +896,18 @@ class App:
             return str(Path(sys.executable).resolve())
         return str((self.SCRIPT_DIRECTORY / "main.py").resolve())
 
+    def _legacy_watch_launcher_scripts(self):
+        """Recognize standalone helpers in this app's own source checkout."""
+        scripts = set()
+        location = Path(getattr(self, "SCRIPT_DIRECTORY", Path(__file__).parent)).resolve()
+        # Source, source/src, and dist/app layouts. Never search unrelated roots.
+        for base in (location, *list(location.parents)[:2]):
+            for directory in (base, base / "src"):
+                script = directory / "watch_and_launch.py"
+                if script.is_file() and (directory / "app.py").is_file() and (directory / "main.py").is_file():
+                    scripts.add(str(script.resolve()))
+        return scripts
+
     def _current_windows_user(self):
         domain = os.environ.get("USERDOMAIN", "").strip()
         username = os.environ.get("USERNAME", "").strip()
@@ -942,7 +999,10 @@ class App:
             result = self._run_hidden(["schtasks", "/Create", "/TN", self.WATCH_LAUNCH_TASK_NAME, "/XML", task_path, "/F"])
             if result.returncode != 0:
                 raise RuntimeError((result.stderr or result.stdout or "Task Scheduler did not accept the task.").strip())
-            self._run_hidden(["schtasks", "/Run", "/TN", self.WATCH_LAUNCH_TASK_NAME])
+            started = self._run_hidden(["schtasks", "/Run", "/TN", self.WATCH_LAUNCH_TASK_NAME])
+            if started.returncode != 0:
+                logging.warning("Windows saved the watcher task but did not start it; starting the helper directly.")
+                self._start_watch_launcher_now()
         finally:
             try:
                 Path(task_path).unlink(missing_ok=True)
@@ -978,12 +1038,14 @@ class App:
         launch_options = {}
         if getattr(sys, "frozen", False):
             launch_options["env"] = dict(os.environ, PYINSTALLER_RESET_ENVIRONMENT="1")
-        subprocess.Popen(
+        process = subprocess.Popen(
             self._watch_launcher_popen_args(),
             cwd=working_directory,
             creationflags=0x08000000,
             **launch_options,
         )
+        logging.info("Started Watch & Launch helper (PID %s).", process.pid)
+        return process
 
     def _remove_watch_launch_task(self):
         self._stop_watch_launcher_process()
@@ -1025,18 +1087,68 @@ class App:
                 conditions.append(f"$_.ExecutablePath -eq '{quoted}'")
             else:
                 conditions.append(f"$_.CommandLine.IndexOf('{quoted}', [StringComparison]::OrdinalIgnoreCase) -ge 0")
+        current_helpers = (
+            "($_.CommandLine -match '(?:^|\\s)--watch(?:\\s|$)' -and ("
+            + " -or ".join(conditions) + "))"
+        )
+        legacy_helpers = []
+        for script in sorted(self._legacy_watch_launcher_scripts()):
+            # The original pythonw helper predates --watch. Match its complete
+            # script argument, not any process with a similar filename.
+            pattern = r'(?:^|\s)"?' + re.escape(script) + r'"?(?:\s|$)'
+            quoted_pattern = pattern.replace("'", "''")
+            legacy_helpers.append(
+                "($_.Name -match '^pythonw?\\.exe$' -and "
+                f"$_.CommandLine -match '{quoted_pattern}')"
+            )
+        owned_helpers = " -or ".join([current_helpers, *legacy_helpers])
         powershell = (
             "Get-CimInstance Win32_Process | "
-            "Where-Object { $_.CommandLine -and $_.CommandLine -match '(?:^|\\s)--watch(?:\\s|$)' -and ("
-            + " -or ".join(conditions) + ") } | "
+            "Where-Object { $_.CommandLine -and (" + owned_helpers + ") } | "
             "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
         )
         self._run_hidden(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", powershell])
+
+    def _background_watch_status(self):
+        from watch_and_launch import is_watcher_running
+        busy = getattr(self, "_watch_launch_operation_pending", False) or self._watch_launch_sync_lock.locked()
+        running = is_watcher_running()
+        enabled = self.settings.watch_and_launch_enabled
+        error = getattr(self, "_watch_launch_error", "")
+        message = "Updating..." if busy else (error or ("Running" if running else "Stopped"))
+        if not busy and enabled and not running and not error:
+            message = "Enabled, but not running. Use Restart to retry."
+        return {"busy": busy, "running": running, "enabled": enabled, "message": message}
+
+    def _request_watch_launch_action(self, action):
+        if action not in {"start", "stop", "restart"}:
+            raise ValueError("Unknown watcher action.")
+        if self._background_watch_status()["busy"]:
+            raise ValueError("Watch & Launch is still updating. Please wait a moment.")
+        enabled = action != "stop"
+        if enabled and not self.settings.is_complete():
+            raise ValueError("Save your watch and library folders first.")
+        # Only this one saved preference changes; dialog drafts stay untouched.
+        updated = replace(self.settings, watch_and_launch_enabled=enabled)
+        self.settings_manager.save(updated)
+        self.settings = updated
+        self._watch_launch_error = ""
+        self._watch_launch_operation_pending = True
+        def apply():
+            try:
+                self._sync_watch_launch_setting()
+            except Exception as exc:
+                self._watch_launch_error = "Could not update watcher: " + str(exc)
+                logging.exception("Could not update background Watch & Launch.")
+            finally:
+                self._watch_launch_operation_pending = False
+        threading.Thread(target=apply, daemon=True).start()
 
     def _sync_watch_launch_on_startup(self):
         try:
             self._sync_watch_launch_setting()
         except Exception:
+            self._watch_launch_error = "Could not update watcher. Use Restart to retry."
             logging.exception("Could not refresh Watch & Launch. Save Settings to retry.")
 
     def _sync_watch_launch_setting(self):
@@ -1060,7 +1172,7 @@ class App:
 
     def __init__(self, root):
         self.root = root
-        self.root.title("AI Paper Sorter"); self.root.geometry("900x640")
+        self.root.title(WINDOW_TITLE); self.root.geometry("900x640")
         ctk.set_appearance_mode("dark")
         self.root.grid_columnconfigure(0, weight=1); self.root.grid_rowconfigure(0, weight=1)
 
@@ -1336,7 +1448,9 @@ class App:
             self.LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 
     def open_settings(self):
-        dialog = SettingsDialog(self.root, self.settings or AppSettings())
+        dialog = SettingsDialog(self.root, self.settings or AppSettings(),
+                                watcher_action=self._request_watch_launch_action,
+                                watcher_status=self._background_watch_status)
         self._wait_for_dialog(dialog)
         if not dialog.result:
             return False
@@ -1356,19 +1470,7 @@ class App:
         if hasattr(self, "redirector"):
             self._replace_log_file_handler()
         logging.info(f"Settings saved. Watch folder: {self.WATCH_FOLDER}; Library folder: {self.SORTED_FOLDER}")
-        try:
-            self._sync_watch_launch_setting()
-        except Exception as e:
-            self.settings.watch_and_launch_enabled = False
-            try:
-                self.settings_manager.save(self.settings)
-            except Exception:
-                pass
-            self._messagebox(
-                title="Watch and Launch Error",
-                message=f"Settings were saved, but Watch and Launch could not be updated:\n{e}",
-                icon="warning",
-            )
+        threading.Thread(target=self._sync_watch_launch_on_startup, daemon=True).start()
         if getattr(self, "app_started", False) and hasattr(self, "observer"):
             try:
                 self.observer.stop()

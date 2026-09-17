@@ -103,7 +103,7 @@ class SmartMetadataIntegrationTests(unittest.TestCase):
         self.assertEqual(details["identifier"]["doi"], ARTICLE_DOI)
         self.assertEqual(
             build_proposed_filename(details, ".pdf"),
-            "Jane_Doe_et_al_Journal_of_Careful_Examples_2025.pdf",
+            "Doe_and_Smith_et_al_Journal_of_Careful_Examples_2025.pdf",
         )
 
     def test_mismatched_reference_doi_never_supplants_local_details(self) -> None:

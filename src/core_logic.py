@@ -464,7 +464,7 @@ def _doi_details_for_document(
             raw["evidence_label"] = "Verified supporting information by DOI metadata"
             raw["evidence_detail"] = "The file's DOI identifies it as supporting information."
             raw = _apply_parent_metadata_for_supplement(raw, resolution, deadline=deadline)
-        return normalize_document_details(raw, path, extraction=extraction, source="DOI")
+        return raw
     return None
 
 
@@ -650,13 +650,134 @@ def _extract_presentation(path: Path) -> DocumentExtraction:
     )
 
 
-def _first_author_from_metadata(value: Any) -> str:
-    author = _clean_metadata_value(value)
+def _creators_from_metadata(value: Any) -> list[str]:
+    if isinstance(value, (list, tuple)):
+        return _normalize_creators(value)
+    author = _first_useful(value)
     if not author:
+        return []
+    parts = re.split(r";|\s+and\s+|\s*&\s*", author, flags=re.I)
+    expanded = []
+    for part in parts:
+        comma_parts = [piece.strip() for piece in part.split(",") if piece.strip()]
+        # Preserve inverted names, but split full comma-separated bylines.
+        if len(comma_parts) > 1 and all(len(piece.split()) >= 2 for piece in comma_parts):
+            expanded.extend(comma_parts)
+        else:
+            expanded.append(part.strip(" ,"))
+    return _normalize_creators([re.sub(r"[\d*\u2020\u2021\u2217]+$", "", piece).strip() for piece in expanded])
+
+
+
+def _first_author_from_metadata(value: Any) -> str:
+    creators = _creators_from_metadata(value)
+    if not creators:
         return ""
-    author = re.split(r";|\band\b|,", author, maxsplit=1, flags=re.IGNORECASE)[0]
-    parts = [part for part in author.split() if part]
-    return parts[-1] if parts else ""
+    author = re.sub(r"\s+et\s+al\.?$", "", creators[0], flags=re.I).strip()
+    if re.search(r"\b(?:university|institute|institution|consortium|collaboration|organization|organisation|committee|society|group|team|council|academy|foundation|laboratory|centre|center)\b", author, re.I):
+        return author
+    if "," in author:
+        return author.split(",", 1)[0].strip()
+    parts = author.split()
+    while len(parts) > 1 and parts[-1].rstrip(".").casefold() in {"jr", "sr", "ii", "iii", "iv", "phd", "md"}:
+        parts.pop()
+    # Also accept a surname followed by initials, e.g. "Smith J. A.".
+    while len(parts) > 1 and re.fullmatch(r"(?:[A-Z]\.?){1,3}", parts[-1]):
+        parts.pop()
+    particles = {"al", "bin", "da", "de", "del", "della", "der", "di", "dos", "du", "la", "le", "van", "von", "ten", "ter"}
+    first = len(parts) - 1
+    while first > 0 and parts[first - 1].casefold() in particles:
+        first -= 1
+    return " ".join(parts[first:])
+
+
+def _looks_like_person_list(value: str) -> bool:
+    if re.search(r"\b(?:supporting|supplementary|supplemental|information|journal|abstract|department|university|institute|laboratory|college|school|published|received|accepted|copyright|doi|figure|table|materials|methods|results|study|analysis|article|research)\b", value, re.I):
+        return False
+    creators = _creators_from_metadata(value)
+    return bool(creators) and all(
+        2 <= len(name.split()) <= 5
+        and all(word in {"van", "von", "de", "der", "del", "da", "di", "la", "le"}
+                or (word[0].isupper() and all(c.isalpha() or c in "'.-\u2019" for c in word))
+                for word in name.split())
+        for name in creators
+    )
+
+
+def _local_citation_fields(extraction: DocumentExtraction) -> dict[str, Any]:
+    """Read explicit properties and conservative front-matter citation fields."""
+    metadata = extraction.metadata
+    creators = _creators_from_metadata(metadata.get("authors") or metadata.get("author"))
+    journal = _first_useful(metadata.get("journal"), metadata.get("journal_title"), metadata.get("venue_or_publisher"))
+    year = _first_useful(metadata.get("year"), metadata.get("publication_year"))
+    lines = [line.strip() for line in extraction.text[:4000].splitlines() if line.strip()][:35]
+    frontmatter = []
+    last_author_line = -2
+    for index, line in enumerate(lines):
+        if re.match(r"^(?:references|bibliography|contents|table of contents|experimental|methods|results|abstract)\b", line, re.I):
+            break
+        frontmatter.append(line)
+        author_label = re.match(r"^(?:authors?|by)\s*[:=]\s*(.+)$", line, re.I)
+        if author_label:
+            creators = _creators_from_metadata(author_label.group(1))
+            last_author_line = index
+        elif index < 12 and _looks_like_person_list(line) and (re.search(r"[,;&]|\band\b", line) or last_author_line == index - 1):
+            printed_creators = _creators_from_metadata(line)
+            if last_author_line == index - 1:
+                creators = _normalize_creators(creators + printed_creators)
+            elif not creators or len(printed_creators) > len(creators):
+                creators = printed_creators
+            last_author_line = index
+        journal_label = re.match(r"^(?:journal(?: title)?|published in)\s*[:=]\s*(.+)$", line, re.I)
+        if journal_label:
+            journal = _first_useful(journal_label.group(1))
+        elif not journal and index < 12 and re.match(r"^(?:Journal (?:of|for)|International Journal|European Journal|American Journal|Nature(?:\s|$)|Science$|Scientific Reports$|Chemical Science$|ACS\s|RSC\s)", line, re.I):
+            journal = re.split(r"\s+(?:(?:19|20|21)\d{2}|(?:Vol(?:ume)?|Issue)\b)", line, maxsplit=1, flags=re.I)[0].strip(" ,.;")
+        year_label = re.match(r"^(?:publication year|year|published|publication date)\s*[:=]?\s*(.+)$", line, re.I)
+        if year_label and _normalize_year(year_label.group(1)) != "Unknown":
+            year = _normalize_year(year_label.group(1))
+    # Never treat an experimental measurement or a PDF creation timestamp as
+    # the publication year of supporting information.
+    year_text = "\n".join(frontmatter) if _supplemental_status(extraction, {})[0] == "confirmed" else extraction.text
+    year = _first_useful(year, _year_from_text(year_text), _normalize_year(metadata.get("subject")))
+    candidates = _metadata_doi_candidates(metadata) or _document_doi_candidates(extraction)
+    return {
+        "primary_creator": creators[0] if creators else "",
+        "creators": creators,
+        "is_multiple_creators": len(creators) > 1 or bool(re.search(r"\bet\s+al\.?", str(metadata.get("author", "")), re.I)),
+        "journal": journal,
+        "venue_or_publisher": journal,
+        "year": year,
+        "identifier": {"doi": candidates[0]} if candidates else {},
+    }
+
+
+def _missing_citation_fields(details: Mapping[str, Any]) -> list[str]:
+    missing = []
+    creators = _normalize_creators(details.get("creators") or details.get("authors"))
+    if not _first_useful(creators[0] if creators else "", details.get("primary_creator"), details.get("author")):
+        missing.append("author")
+    if not _first_useful(details.get("journal"), details.get("venue_or_publisher")):
+        missing.append("journal")
+    if _normalize_year(details.get("year")) == "Unknown":
+        missing.append("year")
+    return missing
+
+
+def _fill_missing_metadata(primary: Mapping[str, Any], backup: Mapping[str, Any]) -> dict[str, Any]:
+    """Retain supported fields, filling only gaps from the next evidence source."""
+    merged = dict(primary)
+    for key in ("title", "year", "document_type", "journal", "venue_or_publisher", "journal_abbreviation", "volume", "issue"):
+        if not _first_useful(merged.get(key)) and _first_useful(backup.get(key)):
+            merged[key] = backup[key]
+    if not _first_useful(merged.get("primary_creator"), merged.get("author")) and not merged.get("creators"):
+        for key in ("primary_creator", "author", "creators", "is_multiple_creators"):
+            if key in backup:
+                merged[key] = backup[key]
+    merged["identifier"] = {**_normalize_identifier(backup.get("identifier")), **_normalize_identifier(primary.get("identifier"))}
+    if _is_true(backup.get("is_supplementary_material")):
+        merged["is_supplementary_material"] = True
+    return merged
 
 
 def _title_from_text(text: str) -> str:
@@ -672,7 +793,7 @@ def _title_from_text(text: str) -> str:
 def _year_from_text(text: str) -> str:
     sample = text[:8_000]
     for pattern in (
-        r"(?:published|publication|issued|released|copyright|©)\D{0,24}((?:1[5-9]|20|21)\d{2})",
+        r"(?:published|publication|issued|released|copyright|Â©)\D{0,24}((?:1[5-9]|20|21)\d{2})",
         r"\b((?:1[5-9]|20|21)\d{2})\b",
     ):
         match = re.search(pattern, sample, re.I)
@@ -727,11 +848,13 @@ def normalize_document_details(
     extraction_warnings = extraction.warnings if extraction else []
     title = _first_useful(raw.get("title"), metadata.get("title"))
     title = title or (_title_from_text(extraction.text) if extraction else "") or path.stem or "Untitled Document"
-    primary_creator = _first_useful(raw.get("primary_creator"), raw.get("author"), metadata.get("author"))
     creators = _normalize_creators(raw.get("creators") or raw.get("authors"))
-    if primary_creator and primary_creator.casefold() not in {creator.casefold() for creator in creators}:
-        creators.insert(0, primary_creator)
-    primary_creator = primary_creator or (creators[0] if creators else "Unknown")
+    primary_creator = _first_useful(raw.get("primary_creator"), raw.get("author"))
+    if not creators:
+        creators = _creators_from_metadata(primary_creator or metadata.get("author"))
+    # Ordered creator lists are authoritative; a shortened first-author field
+    # or a single PDF property must not become a spurious additional author.
+    primary_creator = creators[0] if creators else (primary_creator or "Unknown")
     year = _normalize_year(raw.get("year"))
     document_type = _normalize_document_type(raw.get("document_type"))
     venue = _first_useful(raw.get("venue_or_publisher"), raw.get("journal"), raw.get("venue"), raw.get("publisher"))
@@ -742,7 +865,7 @@ def normalize_document_details(
     volume = _normalize_bibliographic_piece(raw.get("volume"), limit=40)
     issue = _normalize_bibliographic_piece(raw.get("issue"), limit=40)
     raw_multiple = raw.get("is_multiple_creators", raw.get("is_multiple_authors"))
-    is_multiple = raw_multiple if isinstance(raw_multiple, bool) else len(creators) > 1
+    is_multiple = len(creators) > 1 or raw_multiple is True
     warnings = _normalize_warnings(raw.get("warnings"), extraction_warnings)
     review_reasons = _normalize_warnings(raw.get("review_reasons"), ())
     raw_review = _is_true(raw.get("needs_review"))
@@ -775,16 +898,14 @@ def normalize_document_details(
     evidence_label = _first_useful(raw.get("evidence_label"), evidence_defaults.get(source))
     evidence_detail = _clean_metadata_value(raw.get("evidence_detail"))
     if supplemental_status == "confirmed":
-        if not _is_true(raw.get("parent_metadata_verified")):
-            _append_warning(
-                review_reasons,
-                "This is supporting information, but its parent citation could not be verified.",
-            )
         evidence_detail = " ".join(
             item for item in (evidence_detail, supplemental_detail, "_SI will be added to the proposed filename.") if item
         )
     author = _first_author_from_metadata(primary_creator) or primary_creator
-    journal = venue if document_type == "journal_article" else ("Preprint" if document_type == "preprint" else "Unknown")
+    journal = venue if document_type == "journal_article" or supplemental_status == "confirmed" else ("Preprint" if document_type == "preprint" else "Unknown")
+    missing_citation_fields = _missing_citation_fields({"primary_creator": primary_creator, "journal": journal, "year": year}) if supplemental_status == "confirmed" or document_type in {"journal_article", "preprint"} else []
+    if missing_citation_fields:
+        _append_warning(review_reasons, "Missing citation fields: " + ", ".join(missing_citation_fields) + ". Review and complete the proposed name.")
     return {
         "title": title[:500],
         "primary_creator": primary_creator[:300],
@@ -806,6 +927,7 @@ def normalize_document_details(
         "supplemental_parent_doi": normalize_doi(raw.get("supplemental_parent_doi")),
         "evidence_label": evidence_label or "Suggested from local document information",
         "evidence_detail": evidence_detail[:600],
+        "missing_citation_fields": missing_citation_fields,
         "needs_review": bool(review_reasons),
         "review_reasons": review_reasons,
         "warnings": warnings,
@@ -816,23 +938,23 @@ def normalize_document_details(
 }
 
 
+def _local_document_fields(path: Path, extraction: DocumentExtraction) -> dict[str, Any]:
+    raw = _local_citation_fields(extraction)
+    raw.update({
+        "title": _first_useful(extraction.metadata.get("title"), _title_from_text(extraction.text), path.stem),
+        "document_type": "presentation_poster" if path.suffix.lower() in {".ppt", ".pptx"} else infer_document_type(extraction.text),
+        "is_supplementary_material": _supplemental_status(extraction, {})[0] == "confirmed",
+    })
+    return raw
+
+
 def _basic_details_from_extraction(path: Path, extraction: DocumentExtraction) -> dict[str, Any]:
     """Produce a conservative local-only suggestion from an existing extraction."""
-
-    metadata = extraction.metadata
-    title = _first_useful(metadata.get("title"), _title_from_text(extraction.text), path.stem)
-    primary_creator = _first_useful(metadata.get("author"))
-    year = _first_useful(_year_from_text(extraction.text), _normalize_year(metadata.get("subject")))
-    document_type = "presentation_poster" if path.suffix.lower() in {".ppt", ".pptx"} else infer_document_type(extraction.text)
-    raw = {
-        "title": title,
-        "primary_creator": primary_creator,
-        "year": year,
-        "document_type": document_type,
-        "venue_or_publisher": "Unknown",
+    raw = _local_document_fields(path, extraction)
+    raw.update({
         "evidence_label": "Suggested from local document information",
         "evidence_detail": "No document text was sent to an online service.",
-    }
+    })
     return normalize_document_details(raw, path, extraction=extraction, source="Basic")
 
 
@@ -895,6 +1017,11 @@ Return only one valid JSON object with exactly these useful fields:
   supplemental material or cites another paper.
 - warnings: list of short strings
 
+For supporting information, extract the parent article's ordered authors, journal, publication
+ year, and DOI from this supporting file itself. The journal/year must be printed in the text;
+ never infer them from the filename, subject matter, PDF creation date, or your memory.
+ Keep all authors in order, including both authors when there are exactly two. Preserve
+ surname particles and use the creators list for names; do not put "et al." inside a name.
 Journal abbreviations, volume, and issue apply only when the document directly supports them.
 Ambiguous, administrative, personal, or non-scholarly material must be classified conservatively
 and described with a short warning when helpful.
@@ -945,16 +1072,25 @@ def get_document_details(
         extraction = extract_document(path)
     except DocumentExtractionError:
         return get_basic_document_details(path)
+    base_raw = _local_document_fields(path, extraction)
+    base_source = "Basic"
     if allow_online_metadata_lookup:
-        doi_details = _doi_details_for_document(path, extraction)
-        if doi_details:
+        doi_raw = _doi_details_for_document(path, extraction)
+        if doi_raw:
             logging.info("Using validated DOI metadata for %s.", path.name)
-            return doi_details
+            base_raw = _fill_missing_metadata(doi_raw, base_raw)
+            base_source = "DOI"
+    base_details = normalize_document_details(base_raw, path, extraction=extraction, source=base_source)
+    is_supplement = base_details["is_supplementary_material"]
+    # Complete supporting-file citations do not need a cloud request. An
+    # incomplete DOI result must still be allowed to reach the AI fallback.
+    if (base_source == "DOI" and not is_supplement) or (is_supplement and not base_details["missing_citation_fields"]):
+        return base_details
     if path.suffix.lower() == ".ppt" or not allow_cloud_ai or not api_key or not extraction.text:
-        return _basic_details_from_extraction(path, extraction)
+        return base_details
     if not _load_genai():
         logging.error("AI naming is unavailable because the google-genai package is not installed.")
-        return _basic_details_from_extraction(path, extraction)
+        return base_details
     client = None
     try:
         client = genai.Client(
@@ -974,10 +1110,15 @@ def get_document_details(
             ),
         )
         raw_details = parse_ai_json(response.text or "")
+        if is_supplement or _supplemental_status(extraction, raw_details)[0] == "confirmed":
+            raw_details = _fill_missing_metadata(base_raw, raw_details)
+            raw_details["is_supplementary_material"] = True
+            raw_details["evidence_label"] = "Suggested from document text / AI" if base_source != "DOI" else "DOI metadata supplemented from document text / AI"
+            raw_details["evidence_detail"] = "Available citation fields were retained and missing fields were checked against the document text."
         return normalize_document_details(raw_details, path, extraction=extraction, source="AI")
     except Exception as exc:
         logging.error("AI processing error for %s: %s", path.name, exc)
-        return _basic_details_from_extraction(path, extraction)
+        return base_details
     finally:
         if client is not None:
             try:
@@ -1036,16 +1177,30 @@ def _safe_template_value(value: Any, limit: int = 100) -> str:
     return sanitize_filename_part(_first_useful(value))[:limit]
 
 
+def _citation_author_part(details: Mapping[str, Any]) -> str:
+    creators = _creators_from_metadata(details.get("creators") or details.get("authors")
+                                      or details.get("primary_creator") or details.get("author"))
+    surnames = [_safe_template_value(_first_author_from_metadata(name), 60) for name in creators]
+    surnames = [name for name in surnames if name]
+    if not surnames:
+        return ""
+    if len(surnames) == 2:
+        return f"{surnames[0]}_and_{surnames[1]}_et_al"
+    if len(surnames) > 2 or details.get("is_multiple_creators") is True or details.get("is_multiple_authors") is True:
+        return f"{surnames[0]}_et_al"
+    return surnames[0]
+
+
 def _filename_template_values(details: Mapping[str, Any]) -> dict[str, str]:
     primary_creator = _first_useful(details.get("primary_creator"), details.get("author"))
-    author_last = _safe_template_value(details.get("author") or _first_author_from_metadata(primary_creator), 60)
+    author_last = _safe_template_value(_first_author_from_metadata(primary_creator), 60)
     raw_multiple = details.get("is_multiple_creators", details.get("is_multiple_authors", False))
     multiple = raw_multiple if isinstance(raw_multiple, bool) else False
     venue = _safe_template_value(details.get("venue_or_publisher") or details.get("journal"), 80)
     document_type = _normalize_document_type(details.get("document_type"))
     return {
         "author_last": author_last,
-        "author_last_et_al": f"{author_last}_et_al" if author_last and multiple else author_last,
+        "author_last_et_al": _citation_author_part(details),
         "first_author_full": _safe_template_value(primary_creator, 100),
         "journal": _safe_template_value(details.get("journal") or venue, 100),
         "journal_abbreviation": _safe_template_value(details.get("journal_abbreviation"), 80),
@@ -1076,18 +1231,15 @@ def _render_filename_template(template: str, values: Mapping[str, str]) -> str:
 
 
 def _smart_filename(details: Mapping[str, Any], suffix: str) -> str:
-    """The original conservative behavior, retained as the default/fallback."""
-
+    """Use compact surnames for citations, retaining title names for other documents."""
     title = sanitize_filename_part(details.get("title", "Document"))[:100] or "Document"
-    creator = sanitize_filename_part(details.get("primary_creator") or details.get("author") or "")[:60]
-    venue = sanitize_filename_part(details.get("venue_or_publisher") or details.get("journal") or "")[:50]
     year = _normalize_year(details.get("year"))
     document_type = _normalize_document_type(details.get("document_type"))
-    raw_multiple = details.get("is_multiple_creators", details.get("is_multiple_authors", False))
-    multiple = raw_multiple if isinstance(raw_multiple, bool) else False
-    if document_type in {"journal_article", "preprint"} and creator and venue and venue != "Unknown" and year != "Unknown":
-        author_part = f"{creator}_et_al" if multiple else creator
-        return f"{author_part}_{venue}_{year}{suffix}"
+    if document_type in {"journal_article", "preprint"} or details.get("is_supplementary_material"):
+        author = _citation_author_part(details) or "UnknownAuthor"
+        venue = _safe_template_value(_first_useful(details.get("journal"), details.get("venue_or_publisher")), 70) or "UnknownJournal"
+        year = year if year != "Unknown" else "UnknownYear"
+        return f"{author}_{venue}_{year}{suffix}"
     pieces = [title]
     if year != "Unknown":
         pieces.append(year)

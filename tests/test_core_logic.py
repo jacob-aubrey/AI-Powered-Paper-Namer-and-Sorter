@@ -144,7 +144,7 @@ class CoreLogicTests(unittest.TestCase):
 
         self.assertEqual(
             build_proposed_filename(details, ".pdf", filename_format="journal_compact"),
-            "Jane_Doe_et_al_Journal_of_Example_Research_2024.pdf",
+            "Doe_et_al_Journal_of_Example_Research_2024.pdf",
         )
         self.assertEqual(
             build_proposed_filename(

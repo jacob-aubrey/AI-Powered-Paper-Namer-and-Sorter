@@ -47,7 +47,7 @@ The recommended **Smart metadata lookup** method works in this careful order:
 
 The online DOI/citation lookup within Smart metadata lookup can be turned off in Settings. That is useful if you want its local checks but do not want it to contact a metadata service. If the app does use Gemini, the separate Word and PowerPoint permissions still apply.
 
-For journal articles, the proposal usually follows the familiar author / venue / year pattern. For a report, thesis, book chapter, guideline, preprint, letter, presentation, or other uncertain document, the app uses a safer title-based proposal. You can edit every filename before continuing, and the app calls attention to genuinely missing or conflicting information.
+For journal articles and preprints, the default proposal uses surnames, journal, and year: `Smith_Journal_2026.pdf`, `Smith_and_Aubrey_et_al_Journal_2026.pdf` for two authors, or `Smith_et_al_Journal_2026.pdf` for three or more. For a report, thesis, book chapter, guideline, letter, presentation, or other uncertain document, the app uses a safer title-based proposal. You can edit every filename before continuing, and the app calls attention to genuinely missing or conflicting information.
 
 Instead of showing a mysterious percentage, the review window explains the source of its suggestion in plain English—for example, that it came from a verified DOI record, that the DOI record matched the document, or that Gemini was used as a backup. It asks for attention only when something is missing, conflicts, or needs your judgment.
 
@@ -57,7 +57,7 @@ If a file with the final name already exists in the chosen destination, a sorted
 
 ### Choose a filename style
 
-In **Settings**, choose a **Filename style** independently from the naming method. The **Smart (recommended)** filename style keeps the app’s conservative behavior: journal-like documents use creator / venue / year when those fields are reliable; other material uses title / year / type.
+In **Settings**, choose a **Filename style** independently from the naming method. The **Smart (recommended)** filename style keeps the app’s conservative behavior: journal-like documents use surname / venue / year, with explicit placeholders for missing citation fields; other material uses title / year / type.
 
 The other presets are useful when your library needs a consistent citation shape:
 
@@ -75,7 +75,9 @@ For **Custom template**, Settings shows the allowed tokens and a live example. T
 
 When the app can **confidently** tell that a file is supporting or supplementary information for a paper, it adds `_SI` just before the file extension. For example:
 
-`Pawelec_Communications_Materials_2026_SI.pdf`
+`Smith_and_Aubrey_et_al_Journal_2026_SI.pdf`
+
+The default SI name uses the parent paper citation, never a long title. The app reads authors, journal, year, and DOI from the SI itself, uses a verified DOI record when available, and asks Gemini to fill gaps only when AI is enabled for that file type and a key is available. Fields it cannot establish appear as `UnknownAuthor`, `UnknownJournal`, or `UnknownYear` for you to complete.
 
 It looks for strong signs, such as “Supporting Information” on the file itself or a confirmed relationship to a parent article. It does not add `_SI` just because the main paper happens to mention supplements. If it is unsure, it explains that the file may be supplementary material and leaves the proposed name fully editable.
 
@@ -127,7 +129,9 @@ There are two related features:
 
 The helper opens the window as soon as a supported document appears; the app still waits for the download or copy to settle before reading it. Metadata lookup can take longer than window startup. Opening an upgraded version refreshes the enabled helper registration to that app location.
 
-Watch & Launch is **off by default**. Turn the checkbox off and save to remove its scheduled task/startup fallback and stop this app’s helper. The checkbox does not control normal in-app watching.
+Watch & Launch is **off by default**. Settings shows whether its background helper is running and provides **Start**, **Stop**, and **Restart**. These buttons apply immediately using saved folder settings; unrelated unsaved edits stay in the dialog. Stop disables background launching and Windows startup registration while the open app keeps processing documents. Restart resets the background helper. **Refresh** only rescans files in the open app. You can also change the checkbox and save. Save a new watch folder before using the immediate controls.
+
+The background helper retries missed events and temporary folder failures. Its rotating diagnostic log is `%APPDATA%\AI Paper Sorter\watcher.log`. The title bar shows the installed release version.
 
 The watched folder is the **Watch folder** in Settings. You can change it at any time; the app restarts its in-app watcher after a successful save. Watching is direct-folder only, not recursive through subfolders. Temporary Office files whose name starts with `~$` are ignored.
 
@@ -159,7 +163,7 @@ Click **Log** in the app, or open `paper_sorter_log.txt` in the Library folder. 
 | A file is not detected | Confirm it is a `.pdf`, `.docx`, `.pptx`, or `.ppt`, is placed directly in the Watch folder, and is not an Office `~$` temporary file. Use **Refresh** to scan the folder again. |
 | A scan has a bad title or no metadata | The PDF may be image-only. Run OCR or enter a name manually. |
 | Gemini backup is unavailable | Confirm your own key, internet access, Google AI Studio quota/billing, and try Local-only privacy mode. The file can still be sorted manually. |
-| Watch & Launch does not wake the app | Open Settings, turn the checkbox off and save, then turn it back on and save. Keep the installed app in a permanent location. |
+| Watch & Launch does not wake the app | Open Settings, check background status, and use **Restart** (or **Start** if disabled). Keep the full extracted app folder in a permanent location. |
 | A `.doc` file is rejected | Save it as a modern `.docx` file first. |
 | An old `.ppt` file has a weak suggestion | This older PowerPoint format is supported cautiously. Review or edit the name, or save it as a modern `.pptx` file for better text extraction. |
 | A suggestion for a report/thesis looks odd | This is expected for non-journal material. Review and edit the proposal; the app deliberately avoids inventing journal metadata. |

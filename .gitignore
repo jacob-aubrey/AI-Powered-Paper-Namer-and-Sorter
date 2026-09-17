@@ -20,3 +20,6 @@ config.json
 Thumbs.db
 .vscode/
 .idea/
+
+# Local document inspection artifacts
+tmp/

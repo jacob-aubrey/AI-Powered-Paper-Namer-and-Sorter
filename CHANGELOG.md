@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.3.1 - 2026-09-17
+
+- Default paper names use surnames only, with both surnames for exactly two authors: `Smith_and_Aubrey_et_al_Journal_2026.pdf`.
+- Supporting information uses the same citation format plus `_SI`. Local citation fields are read first, DOI records enrich them, and permitted AI fallback fills missing fields. Unresolved citation fields remain explicit review placeholders instead of a long title.
+- Settings displays background watcher status and adds immediate Start, Stop, and Restart controls. Stop leaves the open app processing; Refresh rescans files. Immediate controls preserve other unsaved Settings edits.
+- Upgrades stop the legacy Python watcher that could block the packaged helper. Missed events, interrupted folder access, and failed launches are retried, with a rotating watcher log in the per-user settings folder.
+- The title bar and Windows executable properties display v1.3.1 from a shared version definition.
+- Added regression tests for citation naming, SI AI fallback and privacy, watcher recovery, versioned activation, and independent background controls.
+
 ## 1.3.0 — 2026-09-13
 
 ### Changed
