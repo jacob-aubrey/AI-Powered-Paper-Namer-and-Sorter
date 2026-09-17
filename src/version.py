@@ -1,8 +1,9 @@
 """Release version shared by the window title and Windows executable metadata."""
 
 APP_NAME = "AI Paper Sorter"
-APP_VERSION = "1.3.1"
+APP_VERSION = "1.3.2"
 WINDOW_TITLE = f"{APP_NAME} v{APP_VERSION}"
+EXECUTABLE_NAME = WINDOW_TITLE
 VERSION_TUPLE = tuple(int(part) for part in APP_VERSION.split(".")) + (0,)
 
 
@@ -30,7 +31,7 @@ VSVersionInfo(
           StringStruct(u'FileDescription', u'{APP_NAME}'),
           StringStruct(u'FileVersion', u'{APP_VERSION}'),
           StringStruct(u'InternalName', u'{APP_NAME}'),
-          StringStruct(u'OriginalFilename', u'{APP_NAME}.exe'),
+          StringStruct(u'OriginalFilename', u'{EXECUTABLE_NAME}.exe'),
           StringStruct(u'ProductName', u'{APP_NAME}'),
           StringStruct(u'ProductVersion', u'{APP_VERSION}'),
         ]

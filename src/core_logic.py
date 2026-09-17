@@ -781,13 +781,29 @@ def _fill_missing_metadata(primary: Mapping[str, Any], backup: Mapping[str, Any]
 
 
 def _title_from_text(text: str) -> str:
-    ignored = re.compile(r"^(abstract|keywords|doi|http|www\.|received|accepted|published|copyright)\b", re.I)
-    candidates = []
-    for line in text.splitlines()[:25]:
-        candidate = re.sub(r"\s+", " ", line).strip()
-        if 12 <= len(candidate) <= 220 and not ignored.search(candidate):
-            candidates.append(candidate)
-    return max(candidates, key=len) if candidates else ""
+    # Prefer the opening title block, never the longest contents-table entry.
+    lines = [re.sub(r"\s+", " ", line).strip() for line in text.splitlines()[:40]]
+    lines = [line for line in lines if line]
+    ignored = re.compile(r"^(?:supporting information|supplementary (?:information|material)|supplemental (?:information|material)|abstract|keywords|doi|http|www\.|received|accepted|published|copyright|authors?(?=\s*:)|journal(?=\s*:)|year(?=\s*:)|department|university|e-mail)\b", re.I)
+    title = []
+    for line in lines:
+        if re.match(r"^(?:contents|table of contents|references|bibliography)\b", line, re.I):
+            break
+        if re.search(r"(?:\.\s*){3,}|\sS-?\d+$", line) or re.match(r"^\d+(?:\.\d+)*\s", line):
+            if title:
+                break
+            continue
+        if ignored.search(line):
+            if title:
+                break
+            continue
+        if title and _looks_like_person_list(line) and (re.search(r"[,;&]|\band\b", line) or len(line.split()) <= 3):
+            break
+        if len(line) >= 4:
+            title.append(line)
+        if len(" ".join(title)) >= 220 or len(title) >= 4:
+            break
+    return " ".join(title)[:500]
 
 
 def _year_from_text(text: str) -> str:
@@ -872,7 +888,7 @@ def normalize_document_details(
     supplemental_status, supplemental_detail = _supplemental_status(extraction, raw)
     if extraction and extraction.requires_manual_review:
         _append_warning(review_reasons, "This file format could not be read completely; check the proposed name.")
-    if document_type == "unknown":
+    if document_type == "unknown" and supplemental_status != "confirmed":
         _append_warning(review_reasons, "The document type could not be identified clearly.")
     if raw_review:
         _append_warning(
@@ -913,7 +929,7 @@ def normalize_document_details(
         "author": author[:300],  # Existing UI compatibility.
         "year": year,
         "document_type": document_type,
-        "document_type_label": DOCUMENT_TYPE_LABELS[document_type],
+        "document_type_label": "Supporting Information" if supplemental_status == "confirmed" else DOCUMENT_TYPE_LABELS[document_type],
         "venue_or_publisher": venue[:300],
         "journal": journal[:300],  # Existing UI compatibility.
         "journal_abbreviation": journal_abbreviation,
@@ -1052,6 +1068,12 @@ def parse_ai_json(text: str) -> dict[str, Any]:
     raise ValueError("No valid JSON object found in AI response.")
 
 
+def _temporary_ai_failure(error: Exception) -> bool:
+    # Retry server outages only; quotas, invalid keys, and malformed responses
+    # need user action and must not trigger another automatic request.
+    return getattr(error, "code", None) in {500, 502, 503, 504} or getattr(error, "status_code", None) in {500, 502, 503, 504}
+
+
 def get_document_details(
     document_path: Path | str,
     api_key: str,
@@ -1100,15 +1122,23 @@ def get_document_details(
                 retry_options=genai_types.HttpRetryOptions(attempts=1),
             ),
         )
-        response = client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=_ai_prompt(extraction.text),
-            config=genai_types.GenerateContentConfig(
-                temperature=0.0,
-                response_mime_type="application/json",
-                automatic_function_calling=genai_types.AutomaticFunctionCallingConfig(disable=True),
-            ),
-        )
+        for attempt in range(2):
+            try:
+                response = client.models.generate_content(
+                    model=GEMINI_MODEL,
+                    contents=_ai_prompt(extraction.text),
+                    config=genai_types.GenerateContentConfig(
+                        temperature=0.0,
+                        response_mime_type="application/json",
+                        automatic_function_calling=genai_types.AutomaticFunctionCallingConfig(disable=True),
+                    ),
+                )
+                break
+            except Exception as exc:
+                if attempt or not _temporary_ai_failure(exc):
+                    raise
+                logging.warning("AI service temporarily unavailable for %s; retrying once in 1 second.", path.name)
+                time.sleep(1.0)
         raw_details = parse_ai_json(response.text or "")
         if is_supplement or _supplemental_status(extraction, raw_details)[0] == "confirmed":
             raw_details = _fill_missing_metadata(base_raw, raw_details)
@@ -1118,6 +1148,16 @@ def get_document_details(
         return normalize_document_details(raw_details, path, extraction=extraction, source="AI")
     except Exception as exc:
         logging.error("AI processing error for %s: %s", path.name, exc)
+        temporary = _temporary_ai_failure(exc)
+        message = "AI temporarily unavailable" if temporary else "AI analysis could not be completed"
+        missing = base_details.get("missing_citation_fields") or []
+        if missing:
+            message += "; " + ", ".join(missing) + " could not be determined"
+        message += ". You can retry AI or edit the proposed name."
+        base_details["ai_retry_available"] = True
+        base_details["ai_failure_message"] = message
+        base_details["needs_review"] = True
+        base_details["review_reasons"] = [message, *base_details.get("review_reasons", [])]
         return base_details
     finally:
         if client is not None:

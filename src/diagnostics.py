@@ -14,7 +14,7 @@ def run_self_test(report_path: str) -> int:
     report = {"version": APP_VERSION, "passed": [], "status": "failed"}
     root = None
     try:
-        from app import App, DnDCTk, SettingsDialog
+        from app import App, DnDCTk, SettingsDialog, FilenameEditorDialog
         from settings import AppSettings, SettingsManager
         import core_logic
         with tempfile.TemporaryDirectory(prefix="paper-sorter-self-test-") as directory:
@@ -33,13 +33,37 @@ def run_self_test(report_path: str) -> int:
                 root.update_idletasks()
                 report["ui_construction_seconds"] = round(time.perf_counter() - started, 3)
                 report["passed"].append("main window, icons, fonts, and drag-and-drop library")
-                dialog = SettingsDialog(root, AppSettings(watch_folder=folder / "Incoming papers", sorted_folder=folder / "Research library"))
+                dialog = SettingsDialog(root, AppSettings(watch_folder=folder / "Incoming papers", sorted_folder=folder / "Research library"), watcher_action=lambda action: None, watcher_status=lambda: {"running": True, "enabled": True, "busy": False, "message": "Running"})
                 dialog.withdraw()
                 root.update_idletasks()
                 assert dialog.watch_var.get().endswith("Incoming papers")
                 assert dialog.sorted_var.get().endswith("Research library")
+                assert set(dialog.watcher_buttons) == {"start", "stop"}
+                assert dialog.watcher_buttons["start"].cget("text") == "Restart"
                 dialog.destroy()
-                report["passed"].append("settings window and arbitrary folder names")
+                report["passed"].append("settings window, dynamic Start/Restart, and arbitrary folder names")
+                def simulated_retry():
+                    return {"title": "Example article", "source": "AI"}, "Smith_Journal_2026_SI.pdf"
+                editor = FilenameEditorDialog(root, "sample.pdf", {"ai_retry_available": True}, "old.pdf", retry_ai=simulated_retry)
+                editor.withdraw()
+                editor._start_ai_retry()
+                deadline = time.monotonic() + 3
+                while editor._retry_busy and time.monotonic() < deadline:
+                    root.update()
+                    time.sleep(0.01)
+                assert not editor._retry_busy
+                assert editor.filename_entry.get() == "Smith_Journal_2026_SI.pdf"
+                editor.filename_entry.delete(0, "end")
+                editor.filename_entry.insert(0, "My_edit.pdf")
+                editor._start_ai_retry()
+                deadline = time.monotonic() + 3
+                while editor._retry_busy and time.monotonic() < deadline:
+                    root.update()
+                    time.sleep(0.01)
+                assert not editor._retry_busy
+                assert editor.filename_entry.get() == "My_edit.pdf"
+                editor.destroy()
+                report["passed"].append("responsive Retry AI and preservation of edited filenames (simulated, offline)")
                 from CTkMessagebox import CTkMessagebox
                 box = CTkMessagebox(master=root, message="Offline smoke check", option_1="Close")
                 box.button_event("Close")

@@ -35,7 +35,7 @@ exe = EXE(
     # Keeping dependencies beside the executable avoids unpacking the complete
     # runtime into a new temporary directory on every GUI and watcher launch.
     exclude_binaries=True,
-    name='AI Paper Sorter',
+    name=release['EXECUTABLE_NAME'],
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -56,5 +56,5 @@ coll = COLLECT(
     a.datas,
     strip=False,
     upx=False,
-    name='AI Paper Sorter',
+    name=release['EXECUTABLE_NAME'],
 )

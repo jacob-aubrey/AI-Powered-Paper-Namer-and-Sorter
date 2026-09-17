@@ -381,7 +381,7 @@ def is_within_folder(candidate: Path, folder: Path) -> bool:
 
 # --- NEW: Custom Dialog for Editing Filenames ---
 class FilenameEditorDialog(ctk.CTkToplevel):
-    def __init__(self, master, original_name: str, details: dict, proposed_name: str):
+    def __init__(self, master, original_name: str, details: dict, proposed_name: str, *, retry_ai=None):
         super().__init__(master)
         self.main_window = master
         self.original_suffix = Path(original_name).suffix.lower()
@@ -400,10 +400,52 @@ class FilenameEditorDialog(ctk.CTkToplevel):
         self.grid_rowconfigure(1, weight=0)
         self.grid_rowconfigure(2, weight=0)
 
-        # Info Frame
-        info_frame = ctk.CTkScrollableFrame(self, fg_color="transparent", height=210)
-        info_frame.grid(row=0, column=0, padx=15, pady=15, sticky="ew")
-        info_frame.grid_columnconfigure(1, weight=1)
+        self.original_name = original_name
+        self._retry_ai = retry_ai
+        self._retry_results = Queue()
+        self._last_proposed_name = proposed_name
+        self._retry_busy = False
+        self.info_frame = ctk.CTkScrollableFrame(self, fg_color="transparent", height=210)
+        self.info_frame.grid(row=0, column=0, padx=15, pady=15, sticky="ew")
+        self.info_frame.grid_columnconfigure(1, weight=1)
+        self._render_details(details)
+
+        # Entry Frame
+        entry_frame = ctk.CTkFrame(self)
+        entry_frame.grid(row=1, column=0, padx=15, pady=10, sticky="ew")
+        entry_frame.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(entry_frame, text="Proposed Filename (Editable):").pack(side="top", anchor="w", padx=10, pady=(5,2))
+        self.filename_entry = ctk.CTkEntry(entry_frame, width=550)
+        self.filename_entry.pack(side="top", fill="x", expand=True, padx=10, pady=(0,10))
+        self.filename_entry.insert(0, proposed_name)
+
+        # Button Frame
+        button_frame = ctk.CTkFrame(self, fg_color="transparent")
+        button_frame.grid(row=2, column=0, padx=15, pady=15, sticky="sew")
+        button_frame.grid_columnconfigure((0, 1), weight=1)
+
+        self.skip_button = ctk.CTkButton(button_frame, text="Skip File", command=self._on_skip)
+        self.skip_button.grid(row=0, column=0, padx=5, pady=5, sticky="ew")
+        add_tooltip(self.skip_button, "Leave this document where it is and move on without sorting it.")
+        self.continue_button = ctk.CTkButton(button_frame, text="Continue", command=self._on_continue)
+        self.continue_button.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
+        add_tooltip(self.continue_button, "Accept the filename shown here and continue to folder selection.")
+
+        self.retry_button = ctk.CTkButton(button_frame, text="Retry AI", command=self._start_ai_retry)
+        self.retry_button.grid(row=1, column=0, columnspan=2, padx=5, pady=5, sticky="ew")
+        self.retry_button.configure(state="normal" if retry_ai and details.get("ai_retry_available") else "disabled")
+        if not (retry_ai and details.get("ai_retry_available")):
+            self.retry_button.grid_remove()
+        self.retry_status = ctk.CTkLabel(button_frame, text="", wraplength=600)
+        self.retry_status.grid(row=2, column=0, columnspan=2)
+
+        self.after_idle(lambda: center_window_over_master(self, self.main_window, min_width=640, min_height=380))
+    def _render_details(self, details):
+        info_frame = self.info_frame
+        for child in info_frame.winfo_children():
+            child.destroy()
+        original_name = self.original_name
 
         ctk.CTkLabel(info_frame, text="Original File:", font=ctk.CTkFont(weight="bold")).grid(row=0, column=0, sticky="w")
         ctk.CTkLabel(info_frame, text=original_name, wraplength=450).grid(row=0, column=1, sticky="w", padx=5)
@@ -449,29 +491,50 @@ class FilenameEditorDialog(ctk.CTkToplevel):
                 justify="left",
             ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(10, 0))
 
-        # Entry Frame
-        entry_frame = ctk.CTkFrame(self)
-        entry_frame.grid(row=1, column=0, padx=15, pady=10, sticky="ew")
-        entry_frame.grid_columnconfigure(0, weight=1)
+    def _start_ai_retry(self):
+        if self._retry_busy or not self._retry_ai:
+            return
+        self._retry_busy = True
+        self._retry_original_entry = self.filename_entry.get()
+        self.retry_button.configure(state="disabled")
+        self.continue_button.configure(state="disabled")
+        self.filename_entry.configure(state="disabled")
+        self.retry_status.configure(text="Retrying AI... You can still skip this file.")
+        def work():
+            try:
+                self._retry_results.put((self._retry_ai(), None))
+            except Exception as exc:
+                self._retry_results.put((None, exc))
+        threading.Thread(target=work, daemon=True).start()
+        self.after(100, self._poll_ai_retry)
 
-        ctk.CTkLabel(entry_frame, text="Proposed Filename (Editable):").pack(side="top", anchor="w", padx=10, pady=(5,2))
-        self.filename_entry = ctk.CTkEntry(entry_frame, width=550)
-        self.filename_entry.pack(side="top", fill="x", expand=True, padx=10, pady=(0,10))
-        self.filename_entry.insert(0, proposed_name)
+    def _poll_ai_retry(self):
+        try:
+            result, error = self._retry_results.get_nowait()
+        except Empty:
+            self.after(100, self._poll_ai_retry)
+            return
+        self._retry_busy = False
+        self.continue_button.configure(state="normal")
+        self.filename_entry.configure(state="normal")
+        if error:
+            self.retry_button.configure(state="normal")
+            self.retry_status.configure(text="Retry could not finish. Your filename is unchanged.")
+            return
+        details, proposed = result
+        self._render_details(details)
+        edited = self._retry_original_entry != self._last_proposed_name
+        if not edited:
+            self.filename_entry.delete(0, "end")
+            self.filename_entry.insert(0, proposed)
+        self._last_proposed_name = proposed
+        available = details.get("ai_retry_available", False)
+        self.retry_button.configure(state="normal" if available else "disabled")
+        message = details.get("ai_failure_message") or "Analysis finished. Review the suggested name."
+        if edited:
+            message += " Your edited filename was kept."
+        self.retry_status.configure(text=message)
 
-        # Button Frame
-        button_frame = ctk.CTkFrame(self, fg_color="transparent")
-        button_frame.grid(row=2, column=0, padx=15, pady=15, sticky="sew")
-        button_frame.grid_columnconfigure((0, 1), weight=1)
-
-        self.skip_button = ctk.CTkButton(button_frame, text="Skip File", command=self._on_skip)
-        self.skip_button.grid(row=0, column=0, padx=5, pady=5, sticky="ew")
-        add_tooltip(self.skip_button, "Leave this document where it is and move on without sorting it.")
-        self.continue_button = ctk.CTkButton(button_frame, text="Continue", command=self._on_continue)
-        self.continue_button.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
-        add_tooltip(self.continue_button, "Accept the filename shown here and continue to folder selection.")
-
-        self.after_idle(lambda: center_window_over_master(self, self.main_window, min_width=640, min_height=380))
     def _messagebox(self, **kwargs):
         return create_centered_messagebox(self, center_on=self.main_window, **kwargs)
 
@@ -660,14 +723,12 @@ class SettingsDialog(ctk.CTkToplevel):
         controls = ctk.CTkFrame(frame, fg_color="transparent")
         controls.grid(row=15, column=0, columnspan=3, padx=10, pady=8, sticky="w")
         self.watcher_buttons = {}
-        for action in ("start", "stop", "restart"):
+        for action in ("start", "stop"):
             button = ctk.CTkButton(controls, text=action.title(), width=100,
                                   command=lambda action=action: self._run_watcher_action(action))
             button.pack(side="left", padx=(0, 8))
             self.watcher_buttons[action] = button
-        ctk.CTkLabel(frame, text="Start / Stop / Restart apply immediately to your saved watch folder. "
-                     "Stop leaves this open app processing documents. Refresh only rescans files. "
-                     "Save folder changes before using these controls.",
+        ctk.CTkLabel(frame, text="Stopping background Watch & Launch leaves this open app processing documents.",
                      wraplength=630, justify="left", text_color=("gray35", "gray70")).grid(
                          row=16, column=0, columnspan=3, padx=10, pady=(0, 10), sticky="w")
 
@@ -688,6 +749,8 @@ class SettingsDialog(ctk.CTkToplevel):
 
     def _run_watcher_action(self, action):
         try:
+            if action == "start" and self._watcher_status()["running"]:
+                action = "restart"
             self._watcher_action(action)
             self.watch_launch_var.set(action != "stop")
         except Exception as exc:
@@ -705,8 +768,9 @@ class SettingsDialog(ctk.CTkToplevel):
         self.watcher_status_label.configure(text="Background Watch & Launch: " + status["message"])
         self.save_button.configure(state="disabled" if busy else "normal")
         self.watch_launch_check.configure(state="disabled" if busy else "normal")
+        self.watcher_buttons["start"].configure(text="Restart" if status["running"] else "Start")
         for action, button in self.watcher_buttons.items():
-            disabled = busy or (action == "start" and status["running"]) or (action == "restart" and not status["enabled"] and not status["running"])
+            disabled = busy or (action == "stop" and not status["enabled"] and not status["running"])
             button.configure(state="disabled" if disabled else "normal")
         self.after(750, self._poll_watcher_status)
 
@@ -1062,7 +1126,7 @@ class App:
                 for action in task.findall(".//{*}Exec"):
                     command = (action.findtext("{*}Command") or "").strip().strip('"')
                     arguments = (action.findtext("{*}Arguments") or "").strip()
-                    if arguments == "--watch" and Path(command).name.casefold() == "ai paper sorter.exe":
+                    if arguments == "--watch" and re.fullmatch(r"AI Paper Sorter(?: v\d+\.\d+\.\d+)?\.exe", Path(command).name, re.I):
                         markers.add(command)
         except (OSError, subprocess.SubprocessError, ElementTree.ParseError):
             pass
@@ -1070,7 +1134,7 @@ class App:
         try:
             if startup_file and startup_file.is_file():
                 for command in re.findall(r'^start "" "([^"\r\n]+)" --watch\s*$', startup_file.read_text(encoding="utf-8"), re.MULTILINE):
-                    if Path(command).name.casefold() == "ai paper sorter.exe":
+                    if re.fullmatch(r"AI Paper Sorter(?: v\d+\.\d+\.\d+)?\.exe", Path(command).name, re.I):
                         markers.add(command)
         except OSError:
             pass
@@ -1757,6 +1821,10 @@ class App:
         logging.warning(f"Smart metadata lookup could not finish for {document_path.name}. Using a local suggestion instead.")
         return get_basic_document_details(document_path)
 
+    def _retry_document_proposal(self, document_path):
+        details = self._get_details_for_document(document_path)
+        return details, self._proposed_filename(details, document_path)
+
     def _proposed_filename(self, details: dict, document_path: Path) -> str:
         filename_format = self.settings.clean_filename_format() if self.settings else "smart"
         custom_template = self.settings.custom_filename_template if self.settings else ""
@@ -1803,6 +1871,7 @@ class App:
             original_name=document_path.name,
             details=details,
             proposed_name=new_filename_ext,
+            retry_ai=lambda: self._retry_document_proposal(document_path),
         )
         self._wait_for_dialog(name_dialog)
         final_filename = name_dialog.result
@@ -1971,6 +2040,7 @@ class App:
             original_name=document_path.name,
             details=details,
             proposed_name=new_filename_ext,
+            retry_ai=lambda: self._retry_document_proposal(document_path),
         )
         self._wait_for_dialog(name_dialog)
         final_filename = name_dialog.result

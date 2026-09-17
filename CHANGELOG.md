@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.3.2 - 2026-09-17
+
+- Executable filenames now include the release version: `AI Paper Sorter v1.3.2.exe`. Upgrade registration recognizes both older and versioned names.
+- Simplified background controls to a dynamic Start/Restart button and Stop. Removed the Refresh and save-folder instructions beneath the buttons.
+- Temporary Gemini server failures receive one automatic retry after one second. Persistent failures explain why citation fields are missing and offer a responsive Retry AI button that preserves manually edited filenames and current privacy preferences.
+- Local title extraction joins opening title lines and stops before bylines and contents entries. Confirmed SI is displayed as Supporting Information rather than Unknown Document Type.
+- Validation: 118 regression tests and offline UI checks, including simulated service failures and real dialog retries. The supplied SI title was checked locally without an AI request.
+
 ## 1.3.1 - 2026-09-17
 
 - Default paper names use surnames only, with both surnames for exactly two authors: `Smith_and_Aubrey_et_al_Journal_2026.pdf`.

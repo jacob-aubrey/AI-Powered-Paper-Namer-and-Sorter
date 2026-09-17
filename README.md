@@ -18,7 +18,7 @@ Supported inputs are `.pdf`, `.docx`, `.pptx`, and legacy `.ppt` files. The app 
 1. Download the latest Windows release from the [Releases page](https://github.com/jacob-aubrey/AI-Powered-Paper-Namer-and-Sorter/releases).
 2. Extract the whole ZIP to a permanent location, such as `Documents\AI Paper Sorter`. Do not run it from inside the ZIP.
 3. Keep the `_internal` folder next to the executable. Version 1.3 and later use these nearby runtime files to open faster. Do not distribute or copy only the `.exe`.
-4. Open **AI Paper Sorter**. On first use, open **Settings** and choose:
+4. Open **AI Paper Sorter v1.3.2.exe** (the executable filename includes its release version). On first use, open **Settings** and choose:
    - **Watch folder** — a staging folder for incoming PDFs, Word documents, and PowerPoint presentations.
    - **Library folder** — the top-level folder that will hold your organized library.
 5. Keep those folders separate. The app will refuse folders that are the same or nested inside each other, which prevents accidental watch loops.
@@ -81,6 +81,8 @@ The default SI name uses the parent paper citation, never a long title. The app 
 
 It looks for strong signs, such as “Supporting Information” on the file itself or a confirmed relationship to a parent article. It does not add `_SI` just because the main paper happens to mention supplements. If it is unsure, it explains that the file may be supplementary material and leaves the proposed name fully editable.
 
+If Gemini returns a temporary server error, the app waits one second and retries once. If analysis still fails, the filename dialog explains the failure and offers **Retry AI**. That button keeps the window responsive and preserves an edited filename. Missing fields remain explicit; the app does not invent citation information. Invalid-key and quota errors are not automatically retried. Each request retains its 20-second SDK timeout.
+
 ## Set up your own Gemini API key (optional AI backup)
 
 Each person should use **their own** key. Never share your key, put it in a screenshot, commit it to GitHub, or copy someone else’s configured app data.
@@ -129,7 +131,7 @@ There are two related features:
 
 The helper opens the window as soon as a supported document appears; the app still waits for the download or copy to settle before reading it. Metadata lookup can take longer than window startup. Opening an upgraded version refreshes the enabled helper registration to that app location.
 
-Watch & Launch is **off by default**. Settings shows whether its background helper is running and provides **Start**, **Stop**, and **Restart**. These buttons apply immediately using saved folder settings; unrelated unsaved edits stay in the dialog. Stop disables background launching and Windows startup registration while the open app keeps processing documents. Restart resets the background helper. **Refresh** only rescans files in the open app. You can also change the checkbox and save. Save a new watch folder before using the immediate controls.
+Watch & Launch is **off by default**. Settings shows whether its background helper is running and provides two buttons: **Start** changes to **Restart** when the helper is running, alongside **Stop**. These buttons apply immediately using saved folder settings; unrelated unsaved edits stay in the dialog. Stop disables background launching and Windows startup registration while the open app keeps processing documents. Restart resets the background helper. **Refresh** only rescans files in the open app. You can also change the checkbox and save. Saving a new watch folder updates the watcher automatically.
 
 The background helper retries missed events and temporary folder failures. Its rotating diagnostic log is `%APPDATA%\AI Paper Sorter\watcher.log`. The title bar shows the installed release version.
 
@@ -206,4 +208,4 @@ Before making it broadly public, choose a license and add it to the repository; 
 
 ### Offline installation check
 
-Run `"AI Paper Sorter.exe" --self-test "self-test.json"` from a terminal in the extracted app folder. It writes a pass/fail report for the UI, document extraction libraries, and offline AI-client initialization using temporary sample files. It does not load your saved folders or send requests.
+Run `"AI Paper Sorter v1.3.2.exe" --self-test "self-test.json"` from a terminal in the extracted app folder. It writes a pass/fail report for the UI, document extraction libraries, and offline AI-client initialization using temporary sample files. It does not load your saved folders or send requests.

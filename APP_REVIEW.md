@@ -19,6 +19,10 @@ Reviewed startup/packaging, Watch & Launch, settings, GUI queues and confirmatio
 - [x] Correct repeated DPI scaling during dialog centering and use the owner's monitor work area.
 - [x] Add regression coverage and an offline packaged-app self-test.
 
+## 1.3.2 validation
+
+118 automated tests cover bounded server retries, actionable fallback messages, SI title blocks, manual filename preservation, current privacy preferences, dynamic Start/Restart controls, and versioned executable registration. Offline UI diagnostics exercise the actual retry dialog with simulated results.
+
 ## 1.3.1 validation
 
 Citation names, SI local extraction and simulated AI fallback, privacy controls, versioned window activation, and independent background controls have regression coverage. Source diagnostics construct the UI and exercise extraction and bundled assets without contacting external services. Watcher logs expose background failures.
@@ -36,7 +40,7 @@ The packaged startup probe runs watcher mode with isolated, unconfigured setting
 
 Validation: 86 automated tests; actual Windows filesystem creation, modification, download-renaming and move-out events; offline packaged UI, fonts/icons, TkDnD, messagebox, PDF/DOCX extraction, AI-client initialization, and log-link checks. No live metadata request was needed. A separate PC/account has not been tested.
 
-The 12-second DOI budget is a shared retry deadline, and the 20-second Gemini setting is an SDK request timeout with one attempt. OS/network behavior can exceed those intervals; neither is a hard real-time wall-clock guarantee.
+The 12-second DOI budget is a shared retry deadline, and the 20-second Gemini setting is an SDK timeout per request. Version 1.3.2 permits one additional request after a one-second delay for temporary server errors. OS/network behavior can exceed those intervals; neither is a hard real-time wall-clock guarantee.
 
 ## Suggested next upgrades
 

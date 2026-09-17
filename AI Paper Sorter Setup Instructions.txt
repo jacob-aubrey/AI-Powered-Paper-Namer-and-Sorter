@@ -49,10 +49,10 @@ open README.md. This short file is only a quick first-run checklist.
 6. Optional background watching.
    Settings > Enable Watch & Launch at Windows login/unlock starts a lightweight
    helper while the main app is closed. It is off by default. The Watch folder
-   can always be changed in Settings. Start, Stop, and Restart act immediately
-   on the saved watch folder. Stop leaves the open app processing. Refresh
-   only rescans files. Save folder changes before using the immediate controls.
-   The title bar displays the release version.
+   can always be changed in Settings. Start changes to Restart while the
+   background helper is running. Stop leaves the open app processing.
+   Both the title bar and executable filename display the release version.
+   Open AI Paper Sorter v1.3.2.exe from its complete extracted folder.
 
 Important limitations
 ---------------------
